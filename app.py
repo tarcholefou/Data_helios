@@ -581,7 +581,7 @@ with tab_comp:
     st.markdown("### Répartition par catégorie – empilée (stacked)")
 
     stacked = summary_range[["mois"] + [f"CA_{c}" for c in CATEGORIES]].copy()
-    stacked = stacked.setindex("mois")
+    stacked = stacked.set_index("mois")
     stacked.index = [format_mois_label(m) for m in stacked.index]
     st.area_chart(stacked)
 
