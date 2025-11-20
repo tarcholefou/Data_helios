@@ -319,14 +319,24 @@ annees = list(range(2022, annee_courante + 1))
 
 col_a, col_m = st.columns(2)
 with col_a:
-    annee_select = st.selectbox("Année du rapport à importer", options=annees, index=len(annees) - 1)
+    annee_select = st.selectbox(
+        "Année du rapport à importer",
+        options=annees,
+        index=len(annees) - 1,
+        key="import_year",
+    )
 with col_m:
-    mois_num = st.selectbox("Mois du rapport à importer", options=list(MOIS_FR.keys()), format_func=lambda x: MOIS_FR[x])
+    mois_num = st.selectbox(
+        "Mois du rapport à importer",
+        options=list(MOIS_FR.keys()),
+        format_func=lambda x: MOIS_FR[x],
+        key="import_month",
+    )
 
 mois_import = f"{annee_select}-{mois_num:02d}"
 
-uploaded_pdf = st.file_uploader("Uploader le rapport TVA (PDF)", type=["pdf"])
-import_clicked = st.button("Importer / remplacer ce mois")
+uploaded_pdf = st.file_uploader("Uploader le rapport TVA (PDF)", type=["pdf"], key="pdf_uploader")
+import_clicked = st.button("Importer / remplacer ce mois", key="import_button")
 
 if import_clicked:
     if uploaded_pdf is None:
@@ -388,6 +398,7 @@ with tab_mensuel:
         options=mois_dispo,
         index=len(mois_dispo) - 1,
         format_func=format_mois_label,
+        key="view_month_focus",
     )
 
     df_mois = df_hist[df_hist["mois"] == mois_focus]
@@ -452,7 +463,11 @@ with tab_mensuel:
     # Top produits par catégorie
     st.markdown("#### Top produits par catégorie (mois sélectionné)")
 
-    cat_focus = st.selectbox("Catégorie", options=CATEGORIES)
+    cat_focus = st.selectbox(
+        "Catégorie (top produits)",
+        options=CATEGORIES,
+        key="month_cat_focus",
+    )
     df_cat_focus = df_mois[df_mois["categorie"] == cat_focus]
 
     if df_cat_focus.empty:
@@ -484,6 +499,7 @@ with tab_comp:
             options=mois_dispo,
             index=0,
             format_func=format_mois_label,
+            key="comp_month_start",
         )
     with col_fin:
         mois_fin = st.selectbox(
@@ -491,6 +507,7 @@ with tab_comp:
             options=mois_dispo,
             index=len(mois_dispo) - 1,
             format_func=format_mois_label,
+            key="comp_month_end",
         )
 
     idx_deb = mois_dispo.index(mois_deb)
@@ -530,7 +547,11 @@ with tab_comp:
     # Comparaison par catégorie
     st.markdown("### Comparaison par catégorie – CA mensuel")
 
-    cat_choice = st.selectbox("Catégorie à comparer", options=CATEGORIES)
+    cat_choice = st.selectbox(
+        "Catégorie à comparer",
+        options=CATEGORIES,
+        key="comp_cat_choice",
+    )
 
     col_name = f"CA_{cat_choice}"
     df_cat = summary_range[["mois", col_name]].copy().rename(columns={col_name: "CA_cat"})
@@ -560,7 +581,7 @@ with tab_comp:
     st.markdown("### Répartition par catégorie – empilée (stacked)")
 
     stacked = summary_range[["mois"] + [f"CA_{c}" for c in CATEGORIES]].copy()
-    stacked = stacked.set_index("mois")
+    stacked = stacked.setindex("mois")
     stacked.index = [format_mois_label(m) for m in stacked.index]
     st.area_chart(stacked)
 
@@ -573,13 +594,18 @@ with tab_detail:
 
     col_cat_d, col_mois_d = st.columns(2)
     with col_cat_d:
-        cat_det = st.selectbox("Catégorie", options=CATEGORIES)
+        cat_det = st.selectbox(
+            "Catégorie (détail produits)",
+            options=CATEGORIES,
+            key="detail_cat",
+        )
     with col_mois_d:
         mois_det = st.selectbox(
-            "Mois",
+            "Mois (détail produits)",
             options=mois_dispo,
             index=len(mois_dispo) - 1,
             format_func=format_mois_label,
+            key="detail_month",
         )
 
     df_det = df_hist[(df_hist["categorie"] == cat_det) & (df_hist["mois"] == mois_det)]
@@ -590,7 +616,7 @@ with tab_detail:
         top_prod = (
             df_det.groupby("designation", as_index=False)
             .agg(CA=("total_ttc", "sum"), Quantites=("quantite", "sum"))
-            .sort_values("CA", descending=False if False else True)
+            .sort_values("CA", ascending=False)
         )
 
         st.markdown(f"Top produits – **{cat_det}** – {format_mois_label(mois_det)}")
