@@ -59,6 +59,11 @@ def extract_period_from_text(text: str):
     return mois, d1.date().isoformat(), d2.date().isoformat()
 
 
+def sort_months(month_list):
+    """Trie une liste de mois 'AAAA-MM' chronologiquement."""
+    return sorted(month_list, key=lambda x: datetime.strptime(x, "%Y-%m"))
+
+
 # =========================
 # CATEGORISATION PRODUITS
 # =========================
@@ -66,7 +71,7 @@ def extract_period_from_text(text: str):
 def categorize_product(name: str):
     """
     Renvoie (categorie_principale, sous_categorie) à partir de la désignation.
-    Catégories principales imposées :
+    Catégories principales :
     - 'Abonnements / cartes'
     - 'Boissons & compléments alimentaires'
     - 'Vestimentaire & accessoires sport'
@@ -290,14 +295,14 @@ st.markdown(
     """
 **Process d'import :**  
 1. Exporter le **rapport TVA PDF** du mois depuis ton logiciel.  
-2. Choisir le **mois concerné** ci-dessous (une date à l'intérieur du mois).  
+2. Choisir le **mois concerné** ci-dessous.  
 3. Uploader le PDF.  
 4. L’app ajoute les lignes à l’historique (sans écraser l’existant).
 """
 )
 
-# Sélecteur de mois (on choisit une date dans le mois)
-# Sélecteur simple : Année + Mois
+# ----- Sélecteur Année / Mois (au lieu du calendrier jour par jour) -----
+
 annee_courante = datetime.today().year
 annees = list(range(2022, annee_courante + 1))
 
@@ -308,16 +313,16 @@ mois_fr = {
 }
 
 col1, col2 = st.columns(2)
-
 with col1:
-    annee_select = st.selectbox("Année du rapport :", options=annees, index=len(annees)-1)
-
+    annee_select = st.selectbox("Année du rapport :", options=annees, index=len(annees) - 1)
 with col2:
-    mois_select_num = st.selectbox("Mois du rapport :", options=list(mois_fr.keys()),
-                                   format_func=lambda x: mois_fr[x])
+    mois_select_num = st.selectbox(
+        "Mois du rapport :",
+        options=list(mois_fr.keys()),
+        format_func=lambda x: mois_fr[x],
+    )
 
 selected_month = f"{annee_select}-{mois_select_num:02d}"
-
 
 uploaded_pdf = st.file_uploader("Uploader un rapport TVA (PDF)", type=["pdf"])
 
@@ -365,9 +370,9 @@ df_hist["quantite"] = df_hist["quantite"].astype(int)
 col_filtres, col_export = st.columns([3, 1])
 
 with col_filtres:
-    mois_dispo = sorted(df_hist["mois"].unique())
+    mois_dispo = sort_months(df_hist["mois"].unique())
     mois_select = st.multiselect(
-        "Mois à analyser",
+        "Mois à analyser (pour les graphes ci-dessous)",
         options=mois_dispo,
         default=[mois_dispo[-1]]  # dernier mois par défaut
     )
@@ -392,11 +397,10 @@ ca_total = df_sel["total_ttc"].sum()
 quant_total = df_sel["quantite"].sum()
 
 delta_ca_global = None
-delta_ca_cat = {}
 
 if len(mois_select) == 1:
     mois_unique = mois_select[0]
-    mois_sorted = sorted(mois_dispo)
+    mois_sorted = sort_months(mois_dispo)
     idx = mois_sorted.index(mois_unique)
     if idx > 0:
         mois_prev = mois_sorted[idx - 1]
@@ -408,22 +412,10 @@ if len(mois_select) == 1:
         if ca_prev > 0:
             delta_ca_global = (ca_curr - ca_prev) / ca_prev * 100
 
-        for cat in [
-            "Abonnements / cartes",
-            "Boissons & compléments alimentaires",
-            "Vestimentaire & accessoires sport",
-        ]:
-            ca_curr_cat = df_curr[df_curr["categorie"] == cat]["total_ttc"].sum()
-            ca_prev_cat = df_prev[df_prev["categorie"] == cat]["total_ttc"].sum()
-            if ca_prev_cat > 0:
-                delta_ca_cat[cat] = (ca_curr_cat - ca_prev_cat) / ca_prev_cat * 100
-            elif ca_curr_cat > 0:
-                delta_ca_cat[cat] = None
-
 st.subheader("Indicateurs clés")
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("CA total", f"{ca_total:,.2f} €".replace(",", " "))
+c1.metric("CA total (sélection)", f"{ca_total:,.2f} €".replace(",", " "))
 c2.metric("Quantités vendues", f"{quant_total}")
 if len(mois_select) == 1 and delta_ca_global is not None:
     c3.metric("CA vs mois précédent", f"{delta_ca_global:+.1f} %")
@@ -433,9 +425,48 @@ c4.metric("Nb lignes (ventes)", f"{len(df_sel)}")
 
 st.markdown("---")
 
-# ----- RÉPARTITION PAR CATÉGORIE -----
+# ===== COMPARATIF MENSUEL GLOBAL =====
 
-st.subheader("Répartition du CA par catégorie")
+st.subheader("Comparatif mensuel global (CA total)")
+
+ca_mensuel = (
+    df_hist.groupby("mois", as_index=False)["total_ttc"]
+    .sum()
+    .rename(columns={"total_ttc": "CA_total"})
+)
+ca_mensuel = ca_mensuel.sort_values("mois", key=lambda s: s.map(lambda x: datetime.strptime(x, "%Y-%m")))
+ca_mensuel["CA_prec"] = ca_mensuel["CA_total"].shift(1)
+ca_mensuel["Delta"] = ca_mensuel["CA_total"] - ca_mensuel["CA_prec"]
+ca_mensuel["Delta_%"] = (ca_mensuel["Delta"] / ca_mensuel["CA_prec"] * 100).round(1)
+
+ca_mensuel_display = ca_mensuel[["mois", "CA_total", "Delta", "Delta_%"]].copy()
+
+def style_delta(val):
+    if pd.isna(val):
+        return ""
+    if val > 0:
+        return "color: green; font-weight: bold;"
+    if val < 0:
+        return "color: red; font-weight: bold;"
+    return "color: gray;"
+
+styled_global = ca_mensuel_display.style.format({
+    "CA_total": "{:,.2f} €".format,
+    "Delta": lambda x: "—" if pd.isna(x) else f"{x:+.0f} €",
+    "Delta_%": lambda x: "—" if pd.isna(x) else f"{x:+.1f} %",
+}).applymap(style_delta, subset=["Delta", "Delta_%"])
+
+col_bar, col_tab_glob = st.columns([1, 1])
+with col_bar:
+    st.bar_chart(ca_mensuel.set_index("mois")["CA_total"])
+with col_tab_glob:
+    st.dataframe(styled_global, use_container_width=True)
+
+st.markdown("---")
+
+# ===== RÉPARTITION PAR CATÉGORIE SUR LA SÉLECTION =====
+
+st.subheader("Répartition du CA par catégorie (sur les mois sélectionnés)")
 
 ca_par_cat = (
     df_sel.groupby("categorie", as_index=False)["total_ttc"]
@@ -452,50 +483,81 @@ with col_pie:
     st.pyplot(fig)
 
 with col_tab:
-    st.dataframe(ca_par_cat.sort_values("CA", ascending=False))
+    st.dataframe(ca_par_cat.sort_values("CA", ascending=False), use_container_width=True)
 
 st.markdown("---")
 
-# ----- TENDANCE CA PAR MOIS -----
+# ===== ÉVOLUTION PAR MOIS (GLOBAL + CATÉGORIE) =====
 
-st.subheader("Évolution du CA par mois")
+st.subheader("Évolution du CA par mois (tous mois)")
 
-ca_mensuel = (
-    df_hist.groupby("mois", as_index=False)["total_ttc"]
-    .sum()
-    .rename(columns={"total_ttc": "CA_total"})
-    .sort_values("mois")
-)
-st.line_chart(ca_mensuel.set_index("mois"))
+st.bar_chart(ca_mensuel.set_index("mois")["CA_total"])
 
-st.markdown("### Évolution par catégorie (CA mensuel)")
+st.markdown("### Évolution par catégorie (CA mensuel, tous mois)")
 
 ca_cat_mensuel = (
     df_hist.groupby(["mois", "categorie"], as_index=False)["total_ttc"]
     .sum()
     .rename(columns={"total_ttc": "CA"})
 )
+ca_cat_mensuel = ca_cat_mensuel.sort_values(
+    ["categorie", "mois"],
+    key=lambda col: col.map(lambda x: datetime.strptime(x, "%Y-%m")) if col.name == "mois" else col
+)
 
 pivot_cat = ca_cat_mensuel.pivot(index="mois", columns="categorie", values="CA").fillna(0)
+pivot_cat = pivot_cat.sort_index(key=lambda s: s.map(lambda x: datetime.strptime(x, "%Y-%m")))
+
 st.area_chart(pivot_cat)
 
 st.markdown("---")
 
-# ----- DÉTAIL PAR CAT / PRODUIT -----
+# ===== COMPARATIF MENSUEL PAR CATÉGORIE =====
+
+st.subheader("Comparatif mensuel par catégorie")
+
+cat_for_comp = st.selectbox(
+    "Catégorie à analyser",
+    options=sorted(df_hist["categorie"].unique())
+)
+
+df_cat_comp = ca_cat_mensuel[ca_cat_mensuel["categorie"] == cat_for_comp].copy()
+df_cat_comp = df_cat_comp.sort_values("mois", key=lambda s: s.map(lambda x: datetime.strptime(x, "%Y-%m")))
+df_cat_comp["CA_prec"] = df_cat_comp["CA"].shift(1)
+df_cat_comp["Delta"] = df_cat_comp["CA"] - df_cat_comp["CA_prec"]
+df_cat_comp["Delta_%"] = (df_cat_comp["Delta"] / df_cat_comp["CA_prec"] * 100).round(1)
+
+df_cat_display = df_cat_comp[["mois", "CA", "Delta", "Delta_%"]].copy()
+
+styled_cat = df_cat_display.style.format({
+    "CA": "{:,.2f} €".format,
+    "Delta": lambda x: "—" if pd.isna(x) else f"{x:+.0f} €",
+    "Delta_%": lambda x: "—" if pd.isna(x) else f"{x:+.1f} %",
+}).applymap(style_delta, subset=["Delta", "Delta_%"])
+
+col_bar_cat, col_tab_cat = st.columns([1, 1])
+with col_bar_cat:
+    st.bar_chart(df_cat_comp.set_index("mois")["CA"])
+with col_tab_cat:
+    st.dataframe(styled_cat, use_container_width=True)
+
+st.markdown("---")
+
+# ===== DÉTAIL PAR CAT / PRODUIT =====
 
 st.subheader("Détail par catégorie et produits")
 
-col_cat, col_mois_detail = st.columns(2)
+col_cat_det, col_mois_detail = st.columns(2)
 
-with col_cat:
+with col_cat_det:
     cat_dispo = sorted(df_hist["categorie"].unique())
-    cat_select = st.selectbox("Catégorie", options=cat_dispo)
+    cat_select = st.selectbox("Catégorie (détail produits)", options=cat_dispo)
 
 with col_mois_detail:
     mois_detail = st.selectbox(
         "Mois (pour le détail produits)",
-        options=mois_dispo,
-        index=len(mois_dispo) - 1
+        options=sort_months(df_hist["mois"].unique()),
+        index=len(sort_months(df_hist["mois"].unique())) - 1
     )
 
 df_detail = df_hist[
@@ -519,12 +581,12 @@ else:
         f"**Top produits – {cat_select} – {mois_detail}** "
         "(triés par CA décroissant)"
     )
-    st.dataframe(top_produits)
+    st.dataframe(top_produits, use_container_width=True)
 
     top10 = top_produits.head(10).set_index("designation")
     st.bar_chart(top10["CA"])
 
-# ----- PRODUITS EN AUTRE -----
+# ===== PRODUITS EN AUTRE =====
 
 st.markdown("---")
 st.subheader("Produits classés en catégorie AUTRE (à optimiser)")
@@ -542,4 +604,4 @@ df_autre = (
 if df_autre.empty:
     st.info("Aucun produit en catégorie AUTRE actuellement.")
 else:
-    st.dataframe(df_autre)
+    st.dataframe(df_autre, use_container_width=True)
