@@ -1,20 +1,30 @@
+import os
+import re
+from io import BytesIO
+from datetime import datetime, date
+
 import streamlit as st
 import pandas as pd
 import pdfplumber
-import re
-import os
-from io import BytesIO
-from datetime import datetime
+import matplotlib.pyplot as plt
 
-# ---------- CONFIG ----------
+
+# =========================
+# CONFIG & CONSTANTES
+# =========================
+
 DATA_DIR = "data"
 HISTORY_FILE = os.path.join(DATA_DIR, "history.csv")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# ---------- UTILS NUMÉRIQUES ----------
+
+# =========================
+# FONCTIONS UTILITAIRES
+# =========================
 
 def to_float(x):
+    """Convertit une chaîne avec virgule/€/espaces en float."""
     if x is None:
         return 0.0
     s = str(x)
@@ -25,18 +35,19 @@ def to_float(x):
     except ValueError:
         return 0.0
 
+
 def to_int(x):
+    """Convertit en int, tolérant les virgules/espaces."""
     try:
         return int(float(str(x).replace(",", ".").replace(" ", "")))
     except ValueError:
         return 0
 
-# ---------- EXTRACTION DU MOIS À PARTIR DU PDF ----------
 
-def extract_period_from_text(text):
+def extract_period_from_text(text: str):
     """
-    Cherche la ligne du type '01-10-2025 - 31-10-2025'
-    Retourne (mois AAAA-MM, date_debut, date_fin)
+    Cherche dans le texte une période du type '01-10-2025 - 31-10-2025'.
+    Retourne (mois 'AAAA-MM', date_debut, date_fin).
     """
     match = re.search(r"(\d{2}-\d{2}-\d{4})\s*-\s*(\d{2}-\d{2}-\d{4})", text)
     if not match:
@@ -47,11 +58,19 @@ def extract_period_from_text(text):
     mois = f"{d1.year}-{d1.month:02d}"
     return mois, d1.date().isoformat(), d2.date().isoformat()
 
-# ---------- CATEGORISATION PRODUITS ----------
+
+# =========================
+# CATEGORISATION PRODUITS
+# =========================
 
 def categorize_product(name: str):
     """
-    Renvoie (categorie_principale, sous_categorie) selon la désignation.
+    Renvoie (categorie_principale, sous_categorie) à partir de la désignation.
+    Catégories principales imposées :
+    - 'Abonnements / cartes'
+    - 'Boissons & compléments alimentaires'
+    - 'Vestimentaire & accessoires sport'
+    - 'AUTRE'
     """
     if not isinstance(name, str):
         name = str(name)
@@ -69,29 +88,41 @@ def categorize_product(name: str):
     patterns_boissons = [
         "nocco", "barebells", "fitaid", "vitamin well", "vitaminwell",
         "hydrate", "reload", "anti oxydant", "antioxydant",
-        "omega", "oméga", "collagène", "collagene", "créatine", "creatine",
-        "whey", "magnésium", "magnesium", "multi vitamines", "multivitamine"
+        "omega", "oméga",
+        "collagène", "collagene",
+        "créatine", "creatine",
+        "whey",
+        "magnésium", "magnesium",
+        "multi vitamines", "multivitamine"
     ]
     if any(p in n for p in patterns_boissons):
         return "Boissons & compléments alimentaires", "Boisson / complément"
 
-    # Vestimentaire & accessoires
+    # Vestimentaire & accessoires sport
     patterns_vetements = [
         "t shirt", "t-shirt", "tee shirt", "tee-shirt",
-        "genouillère", "genouillere", "ceinture", "bande de poignets",
-        "bande", "bandes de force", "maniques", "manique"
+        "genouillère", "genouillere",
+        "ceinture",
+        "bande de poignets", "bande", "bandes de force",
+        "maniques", "manique"
     ]
     if any(p in n for p in patterns_vetements):
         return "Vestimentaire & accessoires sport", "Textile / accessoires"
 
     return "AUTRE", "AUTRE"
 
-# ---------- EXTRACTION DES TABLES ----------
 
-def extract_sales_tables_from_pdf(file_obj: BytesIO):
+# =========================
+# EXTRACTION PDF
+# =========================
+
+def extract_sales_tables_from_pdf(file_obj: BytesIO, forced_month: str = None) -> pd.DataFrame:
     """
     Lit un PDF Helios CrossFit - Rapport TVA et retourne un DataFrame
     avec toutes les lignes de ventes (OFFRES + PRODUITS).
+
+    Si forced_month est fourni (format 'AAAA-MM'), ce mois est utilisé,
+    sinon on essaie de le déduire du PDF.
     """
     rows = []
     periode_mois = None
@@ -99,10 +130,21 @@ def extract_sales_tables_from_pdf(file_obj: BytesIO):
     periode_fin = None
 
     with pdfplumber.open(file_obj) as pdf:
-        # Période depuis la première page
+        # Récupération de la période depuis la première page
         first_page_text = pdf.pages[0].extract_text() or ""
-        periode_mois, periode_debut, periode_fin = extract_period_from_text(first_page_text)
+        periode_mois_detecte, periode_debut, periode_fin = extract_period_from_text(first_page_text)
 
+        if forced_month is not None:
+            periode_mois = forced_month
+        else:
+            periode_mois = periode_mois_detecte
+
+        # Fallback si rien trouvé
+        if periode_mois is None:
+            today = datetime.today()
+            periode_mois = f"{today.year}-{today.month:02d}"
+
+        # Parcours des tables
         for page in pdf.pages:
             tables = page.extract_tables()
             for t in tables:
@@ -113,13 +155,12 @@ def extract_sales_tables_from_pdf(file_obj: BytesIO):
                 header = [c.strip() if c else "" for c in t[0]]
                 header_lower = [h.lower() for h in header]
 
-                # On ne garde que les tables avec Désignation + Quantité
-                if not ("désignation" in header_lower or "designation" in header_lower):
+                # On ne garde que les tables ayant Désignation + Quantité
+                if not any("désignation" in h or "designation" in h for h in header_lower):
                     continue
-                if "quantité" not in header_lower and "quantite" not in header_lower:
+                if not any("quantité" in h or "quantite" in h for h in header_lower):
                     continue
 
-                # Construction DataFrame brut
                 data_rows = t[1:]
                 df = pd.DataFrame(data_rows, columns=header)
 
@@ -140,7 +181,7 @@ def extract_sales_tables_from_pdf(file_obj: BytesIO):
                     elif "total ht" in col_norm:
                         colmap[col] = "total_ht"
                     else:
-                        colmap[col] = col_norm  # on garde tel quel
+                        colmap[col] = col_norm
 
                 df = df.rename(columns=colmap)
 
@@ -161,7 +202,7 @@ def extract_sales_tables_from_pdf(file_obj: BytesIO):
                 else:
                     df["tva_pct"] = 0.0
 
-                # Ajout meta période
+                # Meta période
                 df["mois"] = periode_mois
                 df["periode_debut"] = periode_debut
                 df["periode_fin"] = periode_fin
@@ -173,7 +214,7 @@ def extract_sales_tables_from_pdf(file_obj: BytesIO):
 
     full_df = pd.concat(rows, ignore_index=True)
 
-    # Suppression des lignes vides ou totaux éventuels
+    # Suppression lignes vides
     full_df = full_df[full_df["designation"].notna()]
     full_df = full_df[full_df["designation"].str.strip() != ""]
 
@@ -187,7 +228,7 @@ def extract_sales_tables_from_pdf(file_obj: BytesIO):
     full_df["categorie"] = cat_main
     full_df["sous_categorie"] = cat_sub
 
-    # Ajout d'un ID simple
+    # ID de ligne pour éviter les doublons
     full_df["id_ligne"] = (
         full_df["mois"].astype(str)
         + "_"
@@ -200,52 +241,77 @@ def extract_sales_tables_from_pdf(file_obj: BytesIO):
 
     return full_df
 
-# ---------- GESTION HISTORIQUE ----------
 
-def load_history():
+# =========================
+# HISTORIQUE
+# =========================
+
+def load_history() -> pd.DataFrame:
+    """Charge l'historique, en gérant le cas fichier vide/corrompu."""
+    cols = [
+        "mois",
+        "periode_debut",
+        "periode_fin",
+        "designation",
+        "quantite",
+        "total_ttc",
+        "total_tva",
+        "total_ht",
+        "tva_pct",
+        "categorie",
+        "sous_categorie",
+        "id_ligne",
+    ]
+
     if os.path.exists(HISTORY_FILE):
-        return pd.read_csv(HISTORY_FILE)
+        try:
+            df = pd.read_csv(HISTORY_FILE)
+            if df.empty:
+                return pd.DataFrame(columns=cols)
+            return df
+        except pd.errors.EmptyDataError:
+            return pd.DataFrame(columns=cols)
     else:
-        return pd.DataFrame(
-            columns=[
-                "mois",
-                "periode_debut",
-                "periode_fin",
-                "designation",
-                "quantite",
-                "total_ttc",
-                "total_tva",
-                "total_ht",
-                "tva_pct",
-                "categorie",
-                "sous_categorie",
-                "id_ligne",
-            ]
-        )
+        return pd.DataFrame(columns=cols)
 
-def save_history(df_history):
+
+def save_history(df_history: pd.DataFrame):
     df_history.to_csv(HISTORY_FILE, index=False)
 
-# ---------- UI STREAMLIT ----------
+
+# =========================
+# UI STREAMLIT
+# =========================
 
 st.set_page_config(page_title="Helios – Reporting CA", layout="wide")
-st.title("Helios CrossFit – Reporting CA à partir des PDF TVA")
+st.title("Helios CrossFit – Reporting CA à partir des rapports TVA (PDF)")
 
 st.markdown(
     """
-**Process** :  
+**Process d'import :**  
 1. Exporter le **rapport TVA PDF** du mois depuis ton logiciel.  
-2. L’uploader ci-dessous.  
-3. L’app l’intègre à l’historique et met à jour tous les graphiques.
+2. Choisir le **mois concerné** ci-dessous (une date à l'intérieur du mois).  
+3. Uploader le PDF.  
+4. L’app ajoute les lignes à l’historique (sans écraser l’existant).
 """
 )
 
-# --- Upload PDF ---
+# Sélecteur de mois (on choisit une date dans le mois)
+default_month = date.today().replace(day=1)
+selected_date = st.date_input(
+    "Mois du rapport (choisis une date dans le mois du PDF)",
+    value=default_month
+)
+selected_month = selected_date.strftime("%Y-%m")
+
 uploaded_pdf = st.file_uploader("Uploader un rapport TVA (PDF)", type=["pdf"])
 
 if uploaded_pdf is not None:
     with st.spinner("Extraction des données du PDF..."):
-        df_new = extract_sales_tables_from_pdf(BytesIO(uploaded_pdf.read()))
+        df_new = extract_sales_tables_from_pdf(
+            BytesIO(uploaded_pdf.read()),
+            forced_month=selected_month,
+        )
 
     if df_new.empty:
         st.error("Impossible d'extraire des lignes de ventes depuis ce PDF. Vérifie le format.")
@@ -257,28 +323,26 @@ if uploaded_pdf is not None:
         st.success(f"{nb_lignes} lignes importées pour le mois **{mois}** (CA : {ca_new:.2f} €)")
         st.dataframe(df_new.head(20))
 
-        # Chargement + fusion historique
+        # Fusion avec l'historique
         df_hist = load_history()
-
-        # Eviter les doublons sur le même mois (id_ligne)
         ids_existants = set(df_hist["id_ligne"].astype(str)) if not df_hist.empty else set()
         df_to_add = df_new[~df_new["id_ligne"].astype(str).isin(ids_existants)]
 
         df_hist = pd.concat([df_hist, df_to_add], ignore_index=True)
         save_history(df_hist)
 
-        st.info(f"Historique mis à jour. {len(df_to_add)} nouvelles lignes ajoutées.")
+        st.info(f"Historique mis à jour. {len(df_to_add)} nouvelles lignes ajoutées (sans doublons).")
 
 st.markdown("---")
 
-# --- DASHBOARD GLOBAL ---
+# ===== DASHBOARD GLOBAL =====
 
 df_hist = load_history()
 if df_hist.empty:
     st.warning("Aucune donnée historique pour l’instant. Uploade au moins un PDF.")
     st.stop()
 
-# Conversion types
+# Types
 df_hist["mois"] = df_hist["mois"].astype(str)
 df_hist["total_ttc"] = df_hist["total_ttc"].astype(float)
 df_hist["quantite"] = df_hist["quantite"].astype(int)
@@ -307,12 +371,11 @@ with col_export:
         mime="text/csv",
     )
 
-# --- KPIs ---
+# ----- KPIs -----
 
 ca_total = df_sel["total_ttc"].sum()
 quant_total = df_sel["quantite"].sum()
 
-# Si un seul mois sélectionné, calcul de la variation vs mois précédent
 delta_ca_global = None
 delta_ca_cat = {}
 
@@ -330,13 +393,17 @@ if len(mois_select) == 1:
         if ca_prev > 0:
             delta_ca_global = (ca_curr - ca_prev) / ca_prev * 100
 
-        for cat in ["Abonnements / cartes", "Boissons & compléments alimentaires", "Vestimentaire & accessoires sport"]:
+        for cat in [
+            "Abonnements / cartes",
+            "Boissons & compléments alimentaires",
+            "Vestimentaire & accessoires sport",
+        ]:
             ca_curr_cat = df_curr[df_curr["categorie"] == cat]["total_ttc"].sum()
             ca_prev_cat = df_prev[df_prev["categorie"] == cat]["total_ttc"].sum()
             if ca_prev_cat > 0:
                 delta_ca_cat[cat] = (ca_curr_cat - ca_prev_cat) / ca_prev_cat * 100
             elif ca_curr_cat > 0:
-                delta_ca_cat[cat] = None  # pas de base de comparaison
+                delta_ca_cat[cat] = None
 
 st.subheader("Indicateurs clés")
 
@@ -351,7 +418,7 @@ c4.metric("Nb lignes (ventes)", f"{len(df_sel)}")
 
 st.markdown("---")
 
-# --- RÉPARTITION PAR CATÉGORIE (CAMEMBERT + TABLE) ---
+# ----- RÉPARTITION PAR CATÉGORIE -----
 
 st.subheader("Répartition du CA par catégorie")
 
@@ -364,8 +431,6 @@ ca_par_cat = (
 col_pie, col_tab = st.columns([1, 1])
 
 with col_pie:
-    import matplotlib.pyplot as plt
-
     fig, ax = plt.subplots()
     ax.pie(ca_par_cat["CA"], labels=ca_par_cat["categorie"], autopct="%1.1f%%")
     ax.set_title("CA par catégorie")
@@ -376,7 +441,7 @@ with col_tab:
 
 st.markdown("---")
 
-# --- TENDANCE CA PAR MOIS (GLOBAL + PAR CATÉGORIE) ---
+# ----- TENDANCE CA PAR MOIS -----
 
 st.subheader("Évolution du CA par mois")
 
@@ -401,7 +466,7 @@ st.area_chart(pivot_cat)
 
 st.markdown("---")
 
-# --- DÉTAIL PAR CATÉGORIE / PRODUIT ---
+# ----- DÉTAIL PAR CAT / PRODUIT -----
 
 st.subheader("Détail par catégorie et produits")
 
@@ -441,11 +506,10 @@ else:
     )
     st.dataframe(top_produits)
 
-    # Bar chart sur les 10 premiers
     top10 = top_produits.head(10).set_index("designation")
     st.bar_chart(top10["CA"])
 
-# --- PRODUITS EN "AUTRE" POUR OPTIMISER LE MAPPING ---
+# ----- PRODUITS EN AUTRE -----
 
 st.markdown("---")
 st.subheader("Produits classés en catégorie AUTRE (à optimiser)")
