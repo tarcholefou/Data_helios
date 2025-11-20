@@ -55,6 +55,7 @@ def to_int(x):
 
 
 def extract_period_from_text(text: str):
+    """Extrait la période '01-10-2025 - 31-10-2025' si présente."""
     m = re.search(r"(\d{2}-\d{2}-\d{4})\s*-\s*(\d{2}-\d{2}-\d{4})", text)
     if not m:
         return None, None, None
@@ -124,15 +125,19 @@ def categorize_product(name: str):
 # =========================
 
 def extract_sales_tables_from_pdf(file_obj: BytesIO, forced_month: str = None) -> pd.DataFrame:
+    """
+    Lit un PDF Helios CrossFit - Rapport TVA et renvoie un DataFrame
+    avec toutes les lignes de ventes (OFFRES + PRODUITS).
+    """
     rows = []
     periode_debut = None
     periode_fin = None
-    periode_mois = None
 
     with pdfplumber.open(file_obj) as pdf:
         first_text = pdf.pages[0].extract_text() or ""
         mois_detecte, periode_debut, periode_fin = extract_period_from_text(first_text)
 
+        # On utilise toujours le mois choisi dans l'UI
         periode_mois = forced_month or mois_detecte
         if periode_mois is None:
             today = datetime.today()
@@ -213,16 +218,6 @@ def extract_sales_tables_from_pdf(file_obj: BytesIO, forced_month: str = None) -
     full_df["categorie"] = cat_main
     full_df["sous_categorie"] = cat_sub
 
-    full_df["id_ligne"] = (
-        full_df["mois"].astype(str)
-        + "_"
-        + full_df["designation"].astype(str)
-        + "_"
-        + full_df["quantite"].astype(str)
-        + "_"
-        + full_df["total_ttc"].astype(str)
-    )
-
     return full_df
 
 
@@ -235,7 +230,7 @@ def load_history() -> pd.DataFrame:
         "mois", "periode_debut", "periode_fin",
         "designation", "quantite",
         "total_ttc", "total_tva", "total_ht", "tva_pct",
-        "categorie", "sous_categorie", "id_ligne",
+        "categorie", "sous_categorie",
     ]
     if os.path.exists(HISTORY_FILE):
         try:
@@ -258,11 +253,6 @@ def save_history(df_history: pd.DataFrame):
 # =========================
 
 def build_month_summary(df_hist: pd.DataFrame) -> pd.DataFrame:
-    """
-    Renvoie un dataframe avec :
-    - CA_total, Qté_total
-    - CA par catégorie
-    """
     df = df_hist.copy()
     res = df.groupby("mois").agg(
         CA_total=("total_ttc", "sum"),
@@ -288,7 +278,8 @@ def add_deltas(df: pd.DataFrame, col_base: str) -> pd.DataFrame:
     df = df.copy()
     df[f"{col_base}_prec"] = df[col_base].shift(1)
     df[f"Delta_{col_base}"] = df[col_base] - df[f"{col_base}_prec"]
-    df[f"Delta_%_{col_base}"] = (df[f"Delta_{col_base}"] / df[f"{col_base}_prec"] * 100).replace([pd.NA, float("inf"), -float("inf")], pd.NA)
+    df[f"Delta_%_{col_base}"] = (df[f"Delta_{col_base}"] / df[f"{col_base}_prec"] * 100)
+    df[f"Delta_%_{col_base}"] = df[f"Delta_%_{col_base}"].replace([pd.NA, float("inf"), -float("inf")], pd.NA)
     return df
 
 
@@ -315,7 +306,10 @@ st.markdown(
 1. Exporter le **rapport TVA PDF** du mois depuis ton logiciel.  
 2. Choisir le **mois concerné** (année + mois).  
 3. Uploader le PDF.  
-4. Les données sont ajoutées à l’historique (sans écraser l’existant).
+4. Cliquer sur **Importer / remplacer ce mois**.  
+
+👉 L’app **supprime toutes les anciennes lignes** de ce mois et les remplace par les nouvelles,  
+sans toucher aux autres mois.
 """
 )
 
@@ -332,22 +326,35 @@ with col_m:
 mois_import = f"{annee_select}-{mois_num:02d}"
 
 uploaded_pdf = st.file_uploader("Uploader le rapport TVA (PDF)", type=["pdf"])
+import_clicked = st.button("Importer / remplacer ce mois")
 
-if uploaded_pdf is not None:
-    with st.spinner("Extraction des données du PDF..."):
-        df_new = extract_sales_tables_from_pdf(BytesIO(uploaded_pdf.read()), forced_month=mois_import)
-
-    if df_new.empty:
-        st.error("Impossible d'extraire des ventes. Vérifie le PDF.")
+if import_clicked:
+    if uploaded_pdf is None:
+        st.error("Merci de choisir d'abord un fichier PDF.")
     else:
-        df_hist = load_history()
-        ids_existants = set(df_hist["id_ligne"].astype(str)) if not df_hist.empty else set()
-        df_to_add = df_new[~df_new["id_ligne"].astype(str).isin(ids_existants)]
-        df_hist = pd.concat([df_hist, df_to_add], ignore_index=True)
-        save_history(df_hist)
+        with st.spinner("Extraction des données du PDF..."):
+            df_new = extract_sales_tables_from_pdf(BytesIO(uploaded_pdf.read()), forced_month=mois_import)
 
-        st.success(f"{len(df_to_add)} lignes ajoutées pour {format_mois_label(mois_import)} (CA : {df_to_add['total_ttc'].sum():.2f} €).")
-        st.dataframe(df_to_add, use_container_width=True)
+        if df_new.empty:
+            st.error("Impossible d'extraire des ventes depuis ce PDF. Vérifie le format.")
+        else:
+            df_hist = load_history()
+
+            # On supprime l'ancien mois
+            nb_ancien = len(df_hist[df_hist["mois"] == mois_import])
+            df_autres = df_hist[df_hist["mois"] != mois_import]
+
+            # On ajoute les nouvelles lignes
+            df_hist_new = pd.concat([df_autres, df_new], ignore_index=True)
+            save_history(df_hist_new)
+
+            ca_new = df_new["total_ttc"].sum()
+
+            st.success(
+                f"{len(df_new)} lignes importées pour {format_mois_label(mois_import)} "
+                f"(remplace {nb_ancien} lignes précédentes). CA : {ca_new:.2f} €."
+            )
+            st.dataframe(df_new, use_container_width=True)
 
 st.markdown("---")
 
@@ -365,13 +372,13 @@ mois_dispo = sort_months(df_hist["mois"].unique())
 month_summary = build_month_summary(df_hist)
 
 # =========================
-# TABS : 1) Vue mensuelle 2) Comparaison
+# TABS : 1) Vue mensuelle 2) Comparaison 3) Détail
 # =========================
 
 tab_mensuel, tab_comp, tab_detail = st.tabs(["📅 Vue mensuelle", "📈 Comparaison mensuelle", "🔍 Détail produits"])
 
 # -------------------------------------------------------------------
-# TAB 1 : VUE MENSUELLE (ANALYSE D'UN MOIS)
+# TAB 1 : VUE MENSUELLE
 # -------------------------------------------------------------------
 with tab_mensuel:
     st.subheader("Analyse d’un mois")
@@ -403,14 +410,12 @@ with tab_mensuel:
         delta_ca_abs = ca_mois - ca_prev
         delta_ca_pct = (delta_ca_abs / ca_prev) * 100
 
-    # CA par catégorie (mois)
     ca_cat_mois = (
         df_mois.groupby("categorie", as_index=False)
         .agg(CA=("total_ttc", "sum"), Quantites=("quantite", "sum"))
+        .sort_values("CA", ascending=False)
     )
-    ca_cat_mois = ca_cat_mois.sort_values("CA", ascending=False)
 
-    # KPIs
     st.markdown(f"### Synthèse – {format_mois_label(mois_focus)}")
 
     c1, c2, c3, c4 = st.columns(4)
@@ -420,25 +425,12 @@ with tab_mensuel:
         c3.metric("Δ CA vs mois précédent", f"{delta_ca_abs:+.0f} €", f"{delta_ca_pct:+.1f} %")
     else:
         c3.metric("Δ CA vs mois précédent", "N/A", "N/A")
-
-    # CA par catégorie – métriques individuelles
-    ca_cat_dict = {row["categorie"]: row["CA"] for _, row in ca_cat_mois.iterrows()}
-    ca_abo = ca_cat_dict.get("Abonnements / cartes", 0.0)
-    ca_boissons = ca_cat_dict.get("Boissons & compléments alimentaires", 0.0)
-    ca_vest = ca_cat_dict.get("Vestimentaire & accessoires sport", 0.0)
-
-    c4.metric("CA Abonnements / cartes", f"{ca_abo:,.2f} €".replace(",", " "))
-
-    st.markdown("")
-
-    c5, c6 = st.columns(2)
-    c5.metric("CA Boissons & compléments", f"{ca_boissons:,.2f} €".replace(",", " "))
-    c6.metric("CA Vestimentaire & accessoires", f"{ca_vest:,.2f} €".replace(",", " "))
+    c4.metric("Nb lignes (ventes)", len(df_mois))
 
     st.markdown("---")
 
-    # Camembert CA par catégorie
-    st.markdown("#### Répartition du CA par catégorie (mois sélectionné)")
+    # Répartition catégorie (camembert)
+    st.markdown("#### Répartition du CA par catégorie")
 
     col_pie, col_tab = st.columns([1, 1])
     with col_pie:
@@ -449,16 +441,18 @@ with tab_mensuel:
         st.pyplot(fig)
 
     with col_tab:
-        # ajouter % du CA
-        ca_cat_mois["% CA"] = (ca_cat_mois["CA"] / ca_mois * 100).round(1)
+        if ca_mois > 0:
+            ca_cat_mois["% CA"] = (ca_cat_mois["CA"] / ca_mois * 100).round(1)
+        else:
+            ca_cat_mois["% CA"] = 0.0
         st.dataframe(ca_cat_mois, use_container_width=True)
 
     st.markdown("---")
 
-    # Top produits dans une catégorie
+    # Top produits par catégorie
     st.markdown("#### Top produits par catégorie (mois sélectionné)")
 
-    cat_focus = st.selectbox("Choisir une catégorie", options=CATEGORIES)
+    cat_focus = st.selectbox("Catégorie", options=CATEGORIES)
     df_cat_focus = df_mois[df_mois["categorie"] == cat_focus]
 
     if df_cat_focus.empty:
@@ -478,12 +472,11 @@ with tab_mensuel:
 
 
 # -------------------------------------------------------------------
-# TAB 2 : COMPARAISON MENSUELLE
+# TAB 2 : COMPARAISON
 # -------------------------------------------------------------------
 with tab_comp:
     st.subheader("Comparaison mois par mois")
 
-    # Sélection plage de mois
     col_deb, col_fin = st.columns(2)
     with col_deb:
         mois_deb = st.selectbox(
@@ -500,7 +493,6 @@ with tab_comp:
             format_func=format_mois_label,
         )
 
-    # filtration plage
     idx_deb = mois_dispo.index(mois_deb)
     idx_fin = mois_dispo.index(mois_fin)
     if idx_deb > idx_fin:
@@ -510,11 +502,9 @@ with tab_comp:
     mois_range = mois_dispo[idx_deb:idx_fin + 1]
     df_range = df_hist[df_hist["mois"].isin(mois_range)]
     summary_range = build_month_summary(df_range)
-
-    # Ajout deltas sur CA total
     summary_range = add_deltas(summary_range, "CA_total")
 
-    # Table de comparaison globale
+    # Vue globale CA total
     st.markdown("### Vue globale – CA total par mois")
 
     col_chart, col_table = st.columns([1, 1])
@@ -537,14 +527,14 @@ with tab_comp:
 
     st.markdown("---")
 
-    # Comparaison par catégorie sur la plage
+    # Comparaison par catégorie
     st.markdown("### Comparaison par catégorie – CA mensuel")
 
     cat_choice = st.selectbox("Catégorie à comparer", options=CATEGORIES)
 
     col_name = f"CA_{cat_choice}"
-    df_cat = summary_range[["mois", col_name]].copy()
-    df_cat = add_deltas(df_cat.rename(columns={col_name: "CA_cat"}), "CA_cat")
+    df_cat = summary_range[["mois", col_name]].copy().rename(columns={col_name: "CA_cat"})
+    df_cat = add_deltas(df_cat, "CA_cat")
 
     col_chart_cat, col_table_cat = st.columns([1, 1])
 
@@ -567,18 +557,16 @@ with tab_comp:
 
     st.markdown("---")
 
-    # Vue empilée : contribution des catégories par mois
-    st.markdown("### Répartition par catégorie – mois vs mois (stacked)")
+    st.markdown("### Répartition par catégorie – empilée (stacked)")
 
     stacked = summary_range[["mois"] + [f"CA_{c}" for c in CATEGORIES]].copy()
     stacked = stacked.set_index("mois")
     stacked.index = [format_mois_label(m) for m in stacked.index]
-
     st.area_chart(stacked)
 
 
 # -------------------------------------------------------------------
-# TAB 3 : DÉTAIL PRODUITS (TOUS MOIS)
+# TAB 3 : DÉTAIL PRODUITS
 # -------------------------------------------------------------------
 with tab_detail:
     st.subheader("Détail produits par mois et catégorie")
@@ -602,7 +590,7 @@ with tab_detail:
         top_prod = (
             df_det.groupby("designation", as_index=False)
             .agg(CA=("total_ttc", "sum"), Quantites=("quantite", "sum"))
-            .sort_values("CA", ascending=False)
+            .sort_values("CA", descending=False if False else True)
         )
 
         st.markdown(f"Top produits – **{cat_det}** – {format_mois_label(mois_det)}")
