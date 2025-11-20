@@ -297,12 +297,27 @@ st.markdown(
 )
 
 # Sélecteur de mois (on choisit une date dans le mois)
-default_month = date.today().replace(day=1)
-selected_date = st.date_input(
-    "Mois du rapport (choisis une date dans le mois du PDF)",
-    value=default_month
-)
-selected_month = selected_date.strftime("%Y-%m")
+# Sélecteur simple : Année + Mois
+annee_courante = datetime.today().year
+annees = list(range(2022, annee_courante + 1))
+
+mois_fr = {
+    1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril",
+    5: "Mai", 6: "Juin", 7: "Juillet", 8: "Août",
+    9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre",
+}
+
+col1, col2 = st.columns(2)
+
+with col1:
+    annee_select = st.selectbox("Année du rapport :", options=annees, index=len(annees)-1)
+
+with col2:
+    mois_select_num = st.selectbox("Mois du rapport :", options=list(mois_fr.keys()),
+                                   format_func=lambda x: mois_fr[x])
+
+selected_month = f"{annee_select}-{mois_select_num:02d}"
+
 
 uploaded_pdf = st.file_uploader("Uploader un rapport TVA (PDF)", type=["pdf"])
 
