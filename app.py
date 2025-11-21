@@ -334,25 +334,31 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
     # Lecture brute
     df_raw = pd.read_csv(file_obj)
 
-    # Nettoyage des noms de colonnes (espaces parasites)
+    # Nettoyage des noms de colonnes
     df_raw.columns = [c.strip() for c in df_raw.columns]
 
-    # 1) Trouver la colonne "Date de création" de manière robuste
+    # 1) Détection très tolérante de la colonne "date de création"
     date_col = None
+
+    # priorité : colonne qui ressemble à "date de création"
     for c in df_raw.columns:
         lc = c.lower()
-        if "date" in lc and ("création" in lc or "creation" in lc):
+        if "date" in lc and ("cré" in lc or "crea" in lc or "crÃ©" in lc):
             date_col = c
             break
 
+    # sinon : première colonne qui contient "date"
     if date_col is None:
-        # Si vraiment elle n'est pas trouvée, on le dit clairement
-        raise ValueError(
-            "Impossible de trouver la colonne 'Date de création' dans le CSV. "
-            "Colonnes trouvées : " + ", ".join(df_raw.columns)
-        )
+        for c in df_raw.columns:
+            if "date" in c.lower():
+                date_col = c
+                break
 
-    # 2) Renommer les autres colonnes utiles selon la structure RÉELLE de ton CSV
+    # si vraiment rien trouvé : on prend la première colonne du fichier
+    if date_col is None:
+        date_col = df_raw.columns[0]
+
+    # 2) Mapping des autres colonnes IMPORTANTES (basé sur ton export réel)
     colmap = {
         "Prénom": "prenom",
         "Nom": "nom",
@@ -371,12 +377,17 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
         "Entrées max": "entrees_max",
     }
 
-    # On renomme uniquement les colonnes qui existent
+    # On renomme uniquement ce qui existe, sans râler sur le reste
     df = df_raw.rename(columns={k: v for k, v in colmap.items() if k in df_raw.columns})
 
     # 3) Conversion de la date de création → date + mois (AAAA-MM)
     df["date_creation"] = df_raw[date_col].apply(parse_date_creation)
     df = df[~df["date_creation"].isna()]  # on enlève les lignes sans date exploitable
+
+    if df.empty:
+        # Pas d'inscription exploitable : on renvoie un DF vide et on laissera l'UI gérer
+        return df
+
     df["mois_creation"] = df["date_creation"].apply(lambda d: f"{d.year}-{d.month:02d}")
 
     # 4) Classification automatique des contrats : ABONNEMENT / CARTE_10 / EVENT
@@ -394,16 +405,11 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
     )
 
     # 6) Entrées (pour les carnets 10 séances)
+    df["entrees_restantes"] = df.get("entrees_restantes", 0).apply(to_int)
+    df["entrees_max"] = df.get("entrees_max", 0).apply(to_int)
 
+    return df
 
-
-
-
-def load_history_abos() -> pd.DataFrame:
-    if os.path.exists(HISTORY_ABOS_FILE):
-        try:
-            df = pd.read_csv(HISTORY_ABOS_FILE, parse_dates=["date_creation"])
-            return df
         except pd.errors.EmptyDataError:
             return pd.DataFrame()
     else:
