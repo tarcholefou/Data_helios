@@ -290,19 +290,35 @@ def build_month_summary_tva(df_hist: pd.DataFrame) -> pd.DataFrame:
 
 def parse_date_creation(raw):
     """
-    '29/09/25 à 21:37' -> datetime.date
+    Convertit les dates du CSV en date Python.
+    Exemples gérés :
+    - '29/09/25 à 21:37'
+    - '10/11/2025 17:33'
+    - '2025-11-10'
     """
     if pd.isna(raw):
         return None
+
     s = str(raw).strip()
-    # on prend la partie avant l'espace
-    if " " in s:
-        s = s.split(" ")[0]
-    try:
-        d = datetime.strptime(s, "%d/%m/%y")
-        return d.date()
-    except ValueError:
-        return None
+
+    # On enlève la partie heure ('à 21:37', '21:37', etc.)
+    if "à" in s:
+        s = s.split("à")[0].strip()
+    elif " " in s:
+        # s'il reste une heure après un espace, on garde seulement la première partie
+        s = s.split(" ")[0].strip()
+
+    # On essaie plusieurs formats possibles
+    for fmt in ("%d/%m/%y", "%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(s, fmt)
+            return d.date()
+        except ValueError:
+            continue
+
+    # Si rien ne marche, on renvoie None (la ligne sera ignorée)
+    return None
+
 
 
 def classify_contrat(offre: str):
