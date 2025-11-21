@@ -321,6 +321,15 @@ def classify_contrat(offre: str):
     return "ABONNEMENT", offre.strip()
 
 
+if import_abos_clicked:
+    if csv_file is None:
+        st.error("Merci de choisir d'abord un fichier CSV.")
+    else:
+        df_debug = pd.read_csv(BytesIO(csv_file.read()))
+        st.write("Colonnes détectées :", df_debug.columns.tolist())
+        st.stop()
+
+
 def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
     # Lecture brute
     df_raw = pd.read_csv(file_obj)
