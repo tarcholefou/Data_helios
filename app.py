@@ -325,10 +325,10 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
     # Lecture brute
     df_raw = pd.read_csv(file_obj)
 
-    # On nettoie les noms de colonnes (espaces parasites)
+    # Nettoyage des noms de colonnes
     df_raw.columns = [c.strip() for c in df_raw.columns]
 
-    # Mapping attendu (basé sur ton CSV réel)
+    # Mapping EXACT basé sur ton CSV réel
     colmap = {
         "Prénom": "prenom",
         "Nom": "nom",
@@ -348,35 +348,29 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
         "Entrées max": "entrees_max",
     }
 
-    # On renomme quand les clés existent, on ignore silencieusement celles qui n'existent pas
-    df = df_raw.rename(columns={k: v for k, v in colmap.items() if k in df_raw.columns})
+    # Renommage
+    df = df_raw.rename(columns=colmap)
 
-    # Sécurité : si la colonne date_creation_raw n'existe pas, on essaie de la retrouver
-    if "date_creation_raw" not in df.columns:
-        for col in df.columns:
-            if "date de création" in col.lower() or "date de creation" in col.lower():
-                df = df.rename(columns={col: "date_creation_raw"})
-                break
-
+    # Vérification critique : est-ce que la colonne existe ?
     if "date_creation_raw" not in df.columns:
         raise ValueError(
             "Impossible de trouver la colonne 'Date de création' dans le CSV. "
-            "Vérifie l’en-tête exact dans ton export."
+            "En-tête trouvé : " + ", ".join(df_raw.columns)
         )
 
-    # ---- À partir d'ici, tout est comme prévu ----
-
-    # date création parsée + mois
+    # Conversion de la date
     df["date_creation"] = df["date_creation_raw"].apply(parse_date_creation)
-    df = df[~df["date_creation"].isna()]  # on vire les lignes foireuses
+    df = df[~df["date_creation"].isna()]
+
+    # Extraction du mois AAAA-MM
     df["mois_creation"] = df["date_creation"].apply(lambda d: f"{d.year}-{d.month:02d}")
 
-    # types de contrat
+    # Classification automatique abonnement/carte
     types = df["offre"].apply(classify_contrat)
     df["type_contrat"] = types.apply(lambda x: x[0])
     df["sous_type"] = types.apply(lambda x: x[1])
 
-    # prix effectif
+    # Prix
     df["prix_offre"] = df["prix_offre"].apply(to_float)
     df["prix_perso"] = df["prix_perso"].apply(to_float)
     df["prix_effectif"] = df.apply(
@@ -384,10 +378,12 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
         axis=1,
     )
 
+    # Entrées (pour cartes)
     df["entrees_restantes"] = df["entrees_restantes"].apply(to_int)
     df["entrees_max"] = df["entrees_max"].apply(to_int)
 
     return df
+
 
 
 
