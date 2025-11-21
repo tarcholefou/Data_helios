@@ -322,9 +322,13 @@ def classify_contrat(offre: str):
 
 
 def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
+    # Lecture brute
     df_raw = pd.read_csv(file_obj)
 
-    # mapping + renommage de colonnes
+    # On nettoie les noms de colonnes (espaces parasites)
+    df_raw.columns = [c.strip() for c in df_raw.columns]
+
+    # Mapping attendu (basé sur ton CSV réel)
     colmap = {
         "Prénom": "prenom",
         "Nom": "nom",
@@ -343,7 +347,24 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
         "Entrées restantes": "entrees_restantes",
         "Entrées max": "entrees_max",
     }
-    df = df_raw.rename(columns=colmap)
+
+    # On renomme quand les clés existent, on ignore silencieusement celles qui n'existent pas
+    df = df_raw.rename(columns={k: v for k, v in colmap.items() if k in df_raw.columns})
+
+    # Sécurité : si la colonne date_creation_raw n'existe pas, on essaie de la retrouver
+    if "date_creation_raw" not in df.columns:
+        for col in df.columns:
+            if "date de création" in col.lower() or "date de creation" in col.lower():
+                df = df.rename(columns={col: "date_creation_raw"})
+                break
+
+    if "date_creation_raw" not in df.columns:
+        raise ValueError(
+            "Impossible de trouver la colonne 'Date de création' dans le CSV. "
+            "Vérifie l’en-tête exact dans ton export."
+        )
+
+    # ---- À partir d'ici, tout est comme prévu ----
 
     # date création parsée + mois
     df["date_creation"] = df["date_creation_raw"].apply(parse_date_creation)
@@ -367,6 +388,7 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
     df["entrees_max"] = df["entrees_max"].apply(to_int)
 
     return df
+
 
 
 def load_history_abos() -> pd.DataFrame:
