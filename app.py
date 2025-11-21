@@ -324,22 +324,43 @@ def parse_date_creation(raw):
 def classify_contrat(offre: str):
     """
     Retourne (type_contrat, sous_type)
-    type_contrat ∈ { 'ABONNEMENT', 'CARTE_10', 'EVENT' }
+    type_contrat ∈ {ABONNEMENT, CARTE_10, EVENT, EXCLU}
     """
-    if not isinstance(offre, str):
-        offre = str(offre)
-    n = offre.lower().strip()
 
-    # Events à exclure des stats (soirées, offres spéciales…)
-    if any(word in n for word in ["soirée", "soiree", "raclette", "inauguration", "rentrée", "rentree", "offre de rentrée", "offre de rentree", "event", "événement"]):
-        return "EVENT", offre.strip()
+    s = offre.lower().strip()
 
-    # Carnet 10 séances
-    if any(word in n for word in ["carnet", "10 séances", "10 seances", "10x", "10 seance"]):
-        return "CARTE_10", "Carnet 10 séances"
+    # --- ÉVENEMENTS À EXCLURE ---
+    if any(kw in s for kw in [
+        "soirée", "soiree", "inauguration", "raclette", "event"
+    ]):
+        return ("EVENT", offre)
 
-    # Sinon : abonnement
-    return "ABONNEMENT", offre.strip()
+    # --- DROP IN / séance ponctuelle ---
+    if "drop" in s:
+        return ("EXCLU", offre)
+
+    # --- CARNET 10 SÉANCES ---
+    # Ton CSV montre clairement que "Liberté" = 10 séances
+    if "liberté" in s or "liberte" in s:
+        return ("CARTE_10", "Carnet 10 séances")
+
+    # --- ABONNEMENTS ---
+    abo_keywords = [
+        "essentiel",
+        "evolution",
+        "premium",
+        "hyrox",
+        "1x semaine",
+        "1 x semaine",
+        "1xsemaine"
+    ]
+
+    if any(k in s for k in abo_keywords):
+        return ("ABONNEMENT", offre)
+
+    # Si on ne reconnaît pas : on exclut
+    return ("EXCLU", offre)
+
 
 
 def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
