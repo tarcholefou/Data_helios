@@ -352,18 +352,21 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
     # 1) Détection très tolérante de la colonne "date de création"
     date_col = None
 
+    # priorité : colonne ressemblant à "date de création"
     for c in df_raw.columns:
         lc = c.lower()
         if "date" in lc and ("cré" in lc or "crea" in lc or "crÃ©" in lc):
             date_col = c
             break
 
+    # sinon : première colonne qui contient "date"
     if date_col is None:
         for c in df_raw.columns:
             if "date" in c.lower():
                 date_col = c
                 break
 
+    # si rien trouvé : on prend la première colonne du fichier
     if date_col is None:
         date_col = df_raw.columns[0]
 
@@ -386,6 +389,7 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
         "Entrées max": "entrees_max",
     }
 
+    # On renomme uniquement les colonnes présentes
     df = df_raw.rename(columns={k: v for k, v in colmap.items() if k in df_raw.columns})
 
     # 3) Conversion de la date de création → date + mois YYYY-MM
@@ -393,6 +397,7 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
     df = df[~df["date_creation"].isna()]
 
     if df.empty:
+        # Si vraiment aucune date n'est exploitable, on renvoie un DF vide
         return df
 
     df["mois_creation"] = df["date_creation"].apply(lambda d: f"{d.year}-{d.month:02d}")
@@ -416,6 +421,7 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
     df["entrees_max"] = df.get("entrees_max", 0).apply(to_int)
 
     return df
+
 
 
 def load_history_abos() -> pd.DataFrame:
