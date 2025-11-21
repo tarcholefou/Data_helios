@@ -14,8 +14,8 @@ import matplotlib.pyplot as plt
 # =========================
 
 DATA_DIR = "data"
-HISTORY_TVA_FILE = os.path.join(DATA_DIR, "history_tva.csv")   # ventes issues des PDF
-HISTORY_ABOS_FILE = os.path.join(DATA_DIR, "history_abos.csv") # abonnements / cartes issus des CSV
+HISTORY_TVA_FILE = os.path.join(DATA_DIR, "history_tva.csv")   # ventes issues des PDF TVA
+HISTORY_ABOS_FILE = os.path.join(DATA_DIR, "history_abos.csv") # abonnements / cartes issus du CSV
 os.makedirs(DATA_DIR, exist_ok=True)
 
 CATEGORIES_TVA = [
@@ -58,7 +58,7 @@ def to_int(x):
 
 
 def extract_period_from_text(text: str):
-    """Extrait la période '01-10-2025 - 31-10-2025' si présente."""
+    """Extrait la période '01-10-2025 - 31-10-2025' si présente dans le PDF TVA."""
     m = re.search(r"(\d{2}-\d{2}-\d{4})\s*-\s*(\d{2}-\d{2}-\d{4})", text)
     if not m:
         return None, None, None
@@ -138,6 +138,10 @@ def categorize_product_tva(name: str):
 # =========================
 
 def extract_sales_tables_from_pdf(file_obj: BytesIO, forced_month: str = None) -> pd.DataFrame:
+    """
+    Lit un PDF Helios CrossFit - Rapport TVA et renvoie un DataFrame
+    avec toutes les lignes de ventes (OFFRES + PRODUITS), catégorisées.
+    """
     rows = []
     periode_debut = None
     periode_fin = None
@@ -232,7 +236,7 @@ def extract_sales_tables_from_pdf(file_obj: BytesIO, forced_month: str = None) -
 
 
 # =========================
-# IMPORT / HISTORIQUE TVA
+# HISTORIQUE TVA
 # =========================
 
 def load_history_tva() -> pd.DataFrame:
@@ -281,7 +285,7 @@ def build_month_summary_tva(df_hist: pd.DataFrame) -> pd.DataFrame:
 
 
 # =========================
-# IMPORT / HISTORIQUE ABOS (CSV)
+# ABONNEMENTS / CARTES (CSV)
 # =========================
 
 def parse_date_creation(raw):
@@ -291,6 +295,7 @@ def parse_date_creation(raw):
     if pd.isna(raw):
         return None
     s = str(raw).strip()
+    # on prend la partie avant l'espace
     if " " in s:
         s = s.split(" ")[0]
     try:
@@ -303,31 +308,22 @@ def parse_date_creation(raw):
 def classify_contrat(offre: str):
     """
     Retourne (type_contrat, sous_type)
-    type_contrat ∈ { 'ABONNEMENT', 'CARTE_10', 'EVENT', 'AUTRE' }
+    type_contrat ∈ { 'ABONNEMENT', 'CARTE_10', 'EVENT' }
     """
     if not isinstance(offre, str):
         offre = str(offre)
     n = offre.lower().strip()
 
-    # Events à exclure des stats
-    if any(word in n for word in ["soirée", "soiree", "raclette", "inauguration", "rentrée", "rentree", "test"]):
+    # Events à exclure des stats (soirées, offres spéciales…)
+    if any(word in n for word in ["soirée", "soiree", "raclette", "inauguration", "rentrée", "rentree", "offre de rentrée", "offre de rentree", "event", "événement"]):
         return "EVENT", offre.strip()
 
     # Carnet 10 séances
     if any(word in n for word in ["carnet", "10 séances", "10 seances", "10x", "10 seance"]):
         return "CARTE_10", "Carnet 10 séances"
 
-    # Sinon : abonnement officiel
+    # Sinon : abonnement
     return "ABONNEMENT", offre.strip()
-
-
-if import_abos_clicked:
-    if csv_file is None:
-        st.error("Merci de choisir d'abord un fichier CSV.")
-    else:
-        df_debug = pd.read_csv(BytesIO(csv_file.read()))
-        st.write("Colonnes détectées :", df_debug.columns.tolist())
-        st.stop()
 
 
 def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
@@ -340,25 +336,22 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
     # 1) Détection très tolérante de la colonne "date de création"
     date_col = None
 
-    # priorité : colonne qui ressemble à "date de création"
     for c in df_raw.columns:
         lc = c.lower()
         if "date" in lc and ("cré" in lc or "crea" in lc or "crÃ©" in lc):
             date_col = c
             break
 
-    # sinon : première colonne qui contient "date"
     if date_col is None:
         for c in df_raw.columns:
             if "date" in c.lower():
                 date_col = c
                 break
 
-    # si vraiment rien trouvé : on prend la première colonne du fichier
     if date_col is None:
         date_col = df_raw.columns[0]
 
-    # 2) Mapping des autres colonnes IMPORTANTES (basé sur ton export réel)
+    # 2) Mapping des autres colonnes (basé sur ton export réel)
     colmap = {
         "Prénom": "prenom",
         "Nom": "nom",
@@ -377,26 +370,24 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
         "Entrées max": "entrees_max",
     }
 
-    # On renomme uniquement ce qui existe, sans râler sur le reste
     df = df_raw.rename(columns={k: v for k, v in colmap.items() if k in df_raw.columns})
 
-    # 3) Conversion de la date de création → date + mois (AAAA-MM)
+    # 3) Conversion de la date de création → date + mois YYYY-MM
     df["date_creation"] = df_raw[date_col].apply(parse_date_creation)
-    df = df[~df["date_creation"].isna()]  # on enlève les lignes sans date exploitable
+    df = df[~df["date_creation"].isna()]
 
     if df.empty:
-        # Pas d'inscription exploitable : on renvoie un DF vide et on laissera l'UI gérer
         return df
 
     df["mois_creation"] = df["date_creation"].apply(lambda d: f"{d.year}-{d.month:02d}")
 
-    # 4) Classification automatique des contrats : ABONNEMENT / CARTE_10 / EVENT
+    # 4) Classification contrat
     df["offre"] = df["offre"].astype(str)
     types = df["offre"].apply(classify_contrat)
     df["type_contrat"] = types.apply(lambda x: x[0])
     df["sous_type"] = types.apply(lambda x: x[1])
 
-    # 5) Prix : prix catalogue + prix perso → prix_effectif
+    # 5) Prix : prix perso > prix catalogue
     df["prix_offre"] = df.get("prix_offre", 0).apply(to_float)
     df["prix_perso"] = df.get("prix_perso", 0).apply(to_float)
     df["prix_effectif"] = df.apply(
@@ -404,12 +395,18 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
         axis=1,
     )
 
-    # 6) Entrées (pour les carnets 10 séances)
+    # 6) Entrées
     df["entrees_restantes"] = df.get("entrees_restantes", 0).apply(to_int)
     df["entrees_max"] = df.get("entrees_max", 0).apply(to_int)
 
     return df
 
+
+def load_history_abos() -> pd.DataFrame:
+    if os.path.exists(HISTORY_ABOS_FILE):
+        try:
+            df = pd.read_csv(HISTORY_ABOS_FILE, parse_dates=["date_creation"])
+            return df
         except pd.errors.EmptyDataError:
             return pd.DataFrame()
     else:
@@ -421,11 +418,25 @@ def save_history_abos(df: pd.DataFrame):
 
 
 # =========================
+# CALCULS DÉRIVÉS
+# =========================
+
+def add_deltas(df: pd.DataFrame, col_base: str) -> pd.DataFrame:
+    df = df.copy()
+    df[f"{col_base}_prec"] = df[col_base].shift(1)
+    df[f"Delta_{col_base}"] = df[col_base] - df[f"{col_base}_prec"]
+    df[f"Delta_%_{col_base}"] = (df[f"Delta_{col_base}"] / df[f"{col_base}_prec"] * 100)
+    df[f"Delta_%_{col_base}"] = df[f"Delta_%_{col_base}"].replace([pd.NA, float("inf"), -float("inf")], pd.NA)
+    return df
+
+
+# =========================
 # STREAMLIT UI
 # =========================
 
 st.set_page_config(page_title="Helios – Reporting CA", layout="wide")
 st.title("Helios CrossFit – Outil de reporting CA")
+
 
 # ---------- IMPORTS ----------
 
@@ -438,7 +449,7 @@ st.markdown(
 1. Exporter le **rapport TVA PDF** du mois depuis ton logiciel.  
 2. Choisir le **mois concerné** (année + mois).  
 3. Uploader le PDF.  
-4. Cliquer sur **Importer / remplacer ce mois**.  
+4. Cliquer sur **Importer / remplacer ce mois (TVA)**.  
 
 👉 Le mois sélectionné est **remplacé** dans l'historique TVA, les autres mois ne bougent pas.
 """
@@ -473,27 +484,25 @@ if import_tva_clicked:
         st.error("Merci de choisir d'abord un fichier PDF.")
     else:
         with st.spinner("Extraction des données du PDF..."):
-            df_new = extract_sales_tables_from_pdf(BytesIO(uploaded_pdf.read()), forced_month=mois_import_tva)
+            df_new_tva = extract_sales_tables_from_pdf(BytesIO(uploaded_pdf.read()), forced_month=mois_import_tva)
 
-        if df_new.empty:
+        if df_new_tva.empty:
             st.error("Impossible d'extraire des ventes depuis ce PDF. Vérifie le format.")
         else:
             df_hist_tva = load_history_tva()
-
-            # suppression des anciennes lignes de ce mois
             nb_ancien = len(df_hist_tva[df_hist_tva["mois"] == mois_import_tva])
             df_autres = df_hist_tva[df_hist_tva["mois"] != mois_import_tva]
 
-            df_hist_new = pd.concat([df_autres, df_new], ignore_index=True)
+            df_hist_new = pd.concat([df_autres, df_new_tva], ignore_index=True)
             save_history_tva(df_hist_new)
 
-            ca_new = df_new["total_ttc"].sum()
+            ca_new = df_new_tva["total_ttc"].sum()
 
             st.success(
-                f"{len(df_new)} lignes importées pour {format_mois_label(mois_import_tva)} "
+                f"{len(df_new_tva)} lignes importées pour {format_mois_label(mois_import_tva)} "
                 f"(remplace {nb_ancien} lignes précédentes). CA : {ca_new:.2f} €."
             )
-            st.dataframe(df_new, use_container_width=True)
+            st.dataframe(df_new_tva, use_container_width=True)
 
 st.markdown(
     """
@@ -503,8 +512,7 @@ st.markdown(
 2. Uploader le fichier.  
 3. Cliquer sur **Importer / remplacer l'historique inscriptions**.  
 
-👉 L’historique abonnements/cartes est **entièrement reconstruit** à partir de ce fichier  
-(plus fiable et plus à jour).
+👉 L’historique abonnements/cartes est **entièrement reconstruit** à partir de ce fichier.
 """
 )
 
@@ -576,7 +584,7 @@ with tab_mensuel:
 
     df_mois_tva = df_hist_tva[df_hist_tva["mois"] == mois_focus]
 
-    # Mois précédent (pour CA)
+    # Mois précédent
     mois_sorted = mois_dispo_tva
     idx = mois_sorted.index(mois_focus)
     df_prev_tva = None
@@ -600,7 +608,7 @@ with tab_mensuel:
         .sort_values("CA", ascending=False)
     )
 
-    st.markdown(f"### Synthèse CA – {format_mois_label(mois_focus)} (données TVA)")
+    st.markdown(f"### Synthèse CA – {format_mois_label(mois_focus)} (TVA)")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("CA total", f"{ca_mois:,.2f} €".replace(",", " "))
@@ -630,9 +638,8 @@ with tab_mensuel:
 
     st.markdown("---")
 
-    # ---- ABONNEMENTS / CARTES (CSV) POUR CE MOIS ----
-
-    st.markdown(f"### Abonnements & cartes – {format_mois_label(mois_focus)} (données inscriptions)")
+    # Abonnements / cartes pour ce mois (CSV)
+    st.markdown(f"### Abonnements & carnets 10 – {format_mois_label(mois_focus)} (CSV)")
 
     if not has_abos:
         st.info("Aucune donnée CSV d’inscriptions importée pour l’instant.")
@@ -654,8 +661,8 @@ with tab_mensuel:
             cA, cB, cC, cD = st.columns(4)
             cA.metric("Abonnements vendus", nb_abos)
             cB.metric("CA abonnements", f"{ca_abos:,.2f} €".replace(",", " "))
-            cC.metric("Carnets 10 séances vendus", nb_cartes10)
-            cD.metric("CA carnets 10 séances", f"{ca_cartes10:,.2f} €".replace(",", " "))
+            cC.metric("Carnets 10 vendus", nb_cartes10)
+            cD.metric("CA carnets 10", f"{ca_cartes10:,.2f} €".replace(",", " "))
 
             # Répartition par type d'abo
             if not df_abos_only.empty:
@@ -680,20 +687,19 @@ with tab_mensuel:
                 with col_tab_abo:
                     st.dataframe(abo_type, use_container_width=True)
 
-            # Info events (non pris en compte)
             if not df_events.empty:
                 st.caption(
                     f"{len(df_events)} inscription(s) marquée(s) comme EVENT "
-                    "(soirées, offres spéciales) – exclues des stats abos/cartes."
+                    "(soirées / offres spéciales) – exclues des stats abos/cartes."
                 )
 
     st.markdown("---")
 
-    # Top produits par catégorie (TVA)
-    st.markdown("#### Top produits par catégorie (CA TVA)")
+    # Top produits TVA par catégorie
+    st.markdown("#### Top produits par catégorie (TVA)")
 
     cat_focus = st.selectbox(
-        "Catégorie (top produits TVA)",
+        "Catégorie TVA (top produits)",
         options=CATEGORIES_TVA,
         key="month_cat_focus",
     )
@@ -813,20 +819,17 @@ with tab_comp:
 
         st.markdown("---")
 
-        # ------- Comparaison abonnements / cartes (CSV) -------
-
+        # Comparaison abonnements / cartes (CSV)
         st.markdown("### Abonnements & carnets 10 – comparaison par mois (CSV)")
 
         if not has_abos:
             st.info("Aucune donnée CSV d’inscriptions importée – pas de comparaison possible.")
         else:
-            # restreindre df_abos aux mois de la plage
             df_abos_range = df_abos[df_abos["mois_creation"].isin(mois_range)]
 
             if df_abos_range.empty:
                 st.info("Aucune inscription sur cette plage de mois.")
             else:
-                # agrégations
                 abo_month = (
                     df_abos_range[df_abos_range["type_contrat"] == "ABONNEMENT"]
                     .groupby("mois_creation", as_index=False)
@@ -845,7 +848,6 @@ with tab_comp:
                     )
                 )
 
-                # merge
                 abo_cartes = pd.merge(
                     abo_month,
                     cartes_month,
@@ -855,7 +857,6 @@ with tab_comp:
                 abo_cartes["mois"] = abo_cartes["mois_creation"]
                 abo_cartes = abo_cartes.sort_values("mois", key=lambda s: s.map(lambda x: datetime.strptime(x, "%Y-%m")))
 
-                # affichage
                 col_chart_abos, col_tab_abos = st.columns([1, 1])
 
                 with col_chart_abos:
@@ -868,7 +869,6 @@ with tab_comp:
                     disp["mois"] = disp["mois"].apply(format_mois_label)
                     st.dataframe(disp, use_container_width=True)
 
-                # répartition des types d'abo par mois (heatmap simple)
                 st.markdown("#### Répartition des types d’abonnements par mois (en nombre)")
 
                 df_abos_type = (
@@ -902,7 +902,7 @@ with tab_detail:
         )
     with col_mois_d:
         mois_det = st.selectbox(
-            "Mois (détail produits)",
+            "Mois (détail produits TVA)",
             options=mois_dispo_tva,
             index=len(mois_dispo_tva) - 1,
             format_func=format_mois_label,
