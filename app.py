@@ -325,10 +325,25 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
     # Lecture brute
     df_raw = pd.read_csv(file_obj)
 
-    # Nettoyage des noms de colonnes
+    # Nettoyage des noms de colonnes (espaces parasites)
     df_raw.columns = [c.strip() for c in df_raw.columns]
 
-    # Mapping EXACT basé sur ton CSV réel
+    # 1) Trouver la colonne "Date de création" de manière robuste
+    date_col = None
+    for c in df_raw.columns:
+        lc = c.lower()
+        if "date" in lc and ("création" in lc or "creation" in lc):
+            date_col = c
+            break
+
+    if date_col is None:
+        # Si vraiment elle n'est pas trouvée, on le dit clairement
+        raise ValueError(
+            "Impossible de trouver la colonne 'Date de création' dans le CSV. "
+            "Colonnes trouvées : " + ", ".join(df_raw.columns)
+        )
+
+    # 2) Renommer les autres colonnes utiles selon la structure RÉELLE de ton CSV
     colmap = {
         "Prénom": "prenom",
         "Nom": "nom",
@@ -339,7 +354,6 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
         "Date de fin": "date_fin",
         "Statut": "statut",
         "Méthode de paiement": "methode_paiement",
-        "Date de création": "date_creation_raw",
         "Prix de l'offre": "prix_offre",
         "Prix personnalisé": "prix_perso",
         "Reconduction": "reconduction",
@@ -348,41 +362,30 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
         "Entrées max": "entrees_max",
     }
 
-    # Renommage
-    df = df_raw.rename(columns=colmap)
+    # On renomme uniquement les colonnes qui existent
+    df = df_raw.rename(columns={k: v for k, v in colmap.items() if k in df_raw.columns})
 
-    # Vérification critique : est-ce que la colonne existe ?
-    if "date_creation_raw" not in df.columns:
-        raise ValueError(
-            "Impossible de trouver la colonne 'Date de création' dans le CSV. "
-            "En-tête trouvé : " + ", ".join(df_raw.columns)
-        )
-
-    # Conversion de la date
-    df["date_creation"] = df["date_creation_raw"].apply(parse_date_creation)
-    df = df[~df["date_creation"].isna()]
-
-    # Extraction du mois AAAA-MM
+    # 3) Conversion de la date de création → date + mois (AAAA-MM)
+    df["date_creation"] = df_raw[date_col].apply(parse_date_creation)
+    df = df[~df["date_creation"].isna()]  # on enlève les lignes sans date exploitable
     df["mois_creation"] = df["date_creation"].apply(lambda d: f"{d.year}-{d.month:02d}")
 
-    # Classification automatique abonnement/carte
+    # 4) Classification automatique des contrats : ABONNEMENT / CARTE_10 / EVENT
+    df["offre"] = df["offre"].astype(str)
     types = df["offre"].apply(classify_contrat)
     df["type_contrat"] = types.apply(lambda x: x[0])
     df["sous_type"] = types.apply(lambda x: x[1])
 
-    # Prix
-    df["prix_offre"] = df["prix_offre"].apply(to_float)
-    df["prix_perso"] = df["prix_perso"].apply(to_float)
+    # 5) Prix : prix catalogue + prix perso → prix_effectif
+    df["prix_offre"] = df.get("prix_offre", 0).apply(to_float)
+    df["prix_perso"] = df.get("prix_perso", 0).apply(to_float)
     df["prix_effectif"] = df.apply(
         lambda r: r["prix_perso"] if r["prix_perso"] > 0 else r["prix_offre"],
         axis=1,
     )
 
-    # Entrées (pour cartes)
-    df["entrees_restantes"] = df["entrees_restantes"].apply(to_int)
-    df["entrees_max"] = df["entrees_max"].apply(to_int)
+    # 6) Entrées (pour les carnets 10 séances)
 
-    return df
 
 
 
