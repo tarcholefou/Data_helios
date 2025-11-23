@@ -6,7 +6,6 @@ from datetime import datetime, date
 import streamlit as st
 import pandas as pd
 import pdfplumber
-import matplotlib.pyplot as plt
 import altair as alt
 
 
@@ -31,6 +30,34 @@ MOIS_FR = {
     5: "Mai", 6: "Juin", 7: "Juillet", 8: "Août",
     9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre",
 }
+
+
+# =========================
+# PETIT THEME VISUEL
+# =========================
+
+st.set_page_config(page_title="Helios – Reporting CA", layout="wide")
+
+# Légère customisation CSS (marges, titres un peu plus modernes)
+st.markdown(
+    """
+    <style>
+        .block-container {
+            padding-top: 1.5rem;
+            padding-bottom: 2rem;
+        }
+        h1, h2, h3, h4 {
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+        }
+        .stMetric {
+            background-color: #111827;
+            padding: 0.75rem 1rem;
+            border-radius: 0.75rem;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # =========================
@@ -91,6 +118,52 @@ def style_delta(val):
     if v < 0:
         return "color: red; font-weight: bold;"
     return ""
+
+
+# Charts utilitaires (Altair)
+
+def donut_chart(df, label_col, value_col, title: str):
+    """Donut chart moderne avec Altair."""
+    if df.empty or df[value_col].sum() == 0:
+        return None
+
+    chart = (
+        alt.Chart(df)
+        .mark_arc(outerRadius=110, innerRadius=55)
+        .encode(
+            theta=alt.Theta(f"{value_col}:Q", stack=True),
+            color=alt.Color(f"{label_col}:N", legend=alt.Legend(title="")),
+            tooltip=[label_col, alt.Tooltip(value_col, format=".2f")],
+        )
+        .properties(height=260, title=title)
+    )
+    return chart
+
+
+def bar_chart_vertical(df, x_col, y_col, title: str, y_title: str):
+    return (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x=alt.X(f"{x_col}:N", title=None),
+            y=alt.Y(f"{y_col}:Q", title=y_title),
+            tooltip=[x_col, alt.Tooltip(y_col, format=".2f")],
+        )
+        .properties(height=260, title=title)
+    )
+
+
+def bar_chart_horizontal(df, cat_col, value_col, title: str, v_title: str):
+    return (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x=alt.X(f"{value_col}:Q", title=v_title),
+            y=alt.Y(f"{cat_col}:N", sort="-x", title=None),
+            tooltip=[cat_col, alt.Tooltip(value_col, format=".2f")],
+        )
+        .properties(height=260, title=title)
+    )
 
 
 # =========================
@@ -463,10 +536,9 @@ def add_deltas(df: pd.DataFrame, col_base: str) -> pd.DataFrame:
 
 
 # =========================
-# STREAMLIT UI
+# STREAMLIT – CONTENU
 # =========================
 
-st.set_page_config(page_title="Helios – Reporting CA", layout="wide")
 st.title("Helios CrossFit – Outil de reporting CA")
 
 
@@ -474,16 +546,18 @@ st.title("Helios CrossFit – Outil de reporting CA")
 
 st.markdown(
     """
-## Import de données
+### Import de données
 
-### 1) Import CA (rapports TVA – PDF)
+**1) CA (rapports TVA – PDF)**  
+- Exporter le rapport TVA du mois  
+- Choisir l’année et le mois  
+- Uploader le PDF  
+- Cliquer sur “Importer / remplacer ce mois (TVA)”  
 
-1. Exporter le **rapport TVA PDF** du mois depuis ton logiciel.  
-2. Choisir le **mois concerné** (année + mois).  
-3. Uploader le PDF.  
-4. Cliquer sur **Importer / remplacer ce mois (TVA)**.  
-
-👉 Le mois sélectionné est **remplacé** dans l'historique TVA, les autres mois ne bougent pas.
+**2) Abonnements / cartes (CSV)**  
+- Exporter le fichier d’inscriptions  
+- Uploader le CSV  
+- Cliquer sur “Importer / remplacer l’historique inscriptions”
 """
 )
 
@@ -508,7 +582,7 @@ with col_m:
 
 mois_import_tva = f"{annee_select}-{mois_num:02d}"
 
-uploaded_pdf = st.file_uploader("Uploader le rapport TVA (PDF)", type=["pdf"], key="pdf_uploader")
+uploaded_pdf = st.file_uploader("Rapport TVA (PDF)", type=["pdf"], key="pdf_uploader")
 import_tva_clicked = st.button("Importer / remplacer ce mois (TVA)", key="import_tva_button")
 
 if import_tva_clicked:
@@ -534,21 +608,9 @@ if import_tva_clicked:
                 f"{len(df_new_tva)} lignes importées pour {format_mois_label(mois_import_tva)} "
                 f"(remplace {nb_ancien} lignes précédentes). CA : {ca_new:.2f} €."
             )
-            st.dataframe(df_new_tva.head(50))
+            st.dataframe(df_new_tva.head(30))
 
-st.markdown(
-    """
-### 2) Import abonnements / cartes (CSV)
-
-1. Exporter le fichier **inscriptions (.csv)** depuis ton logiciel.  
-2. Uploader le fichier.  
-3. Cliquer sur **Importer / remplacer l'historique inscriptions**.  
-
-👉 L’historique abonnements/cartes est **entièrement reconstruit** à partir de ce fichier.
-"""
-)
-
-csv_file = st.file_uploader("Uploader le fichier d’inscriptions (CSV)", type=["csv"], key="csv_abos_uploader")
+csv_file = st.file_uploader("Inscriptions (CSV)", type=["csv"], key="csv_abos_uploader")
 import_abos_clicked = st.button("Importer / remplacer l’historique inscriptions", key="import_abos_button")
 
 if import_abos_clicked:
@@ -569,9 +631,9 @@ if import_abos_clicked:
                 f"{nb_rows} inscriptions importées. Période couverte : "
                 f"{format_mois_label(mois_couverts[0])} → {format_mois_label(mois_couverts[-1])}."
             )
-            st.dataframe(df_abos_new.head(50))
+            st.dataframe(df_abos_new.head(30))
 
-st.markdown("---")
+st.divider()
 
 # ---------- CHARGEMENT HISTORIQUES ----------
 
@@ -606,7 +668,6 @@ tab_dash, tab_mensuel, tab_comp, tab_detail = st.tabs(
 with tab_dash:
     st.subheader("Synthèse globale – Dashboard Direction")
 
-    # Mois de référence = dernier mois dispo par défaut
     mois_ref = st.selectbox(
         "Mois analysé",
         options=mois_dispo_tva,
@@ -649,48 +710,36 @@ with tab_dash:
         ca_cartes10_csv = df_cartes10["prix_effectif"].sum()
     else:
         df_mois_abos = pd.DataFrame()
-        df_abos_only = pd.DataFrame()
-        df_cartes10 = pd.DataFrame()
         nb_abos = nb_cartes10 = 0
         ca_abos_csv = ca_cartes10_csv = 0.0
 
-    # KPI haut de page
+    # KPI
     col1, col2, col3, col4 = st.columns(4)
     col1.metric(
         "CA total (TVA)",
-        f"{ca_ref:,.2f} €".replace(",", " "),
+        f"{ca_ref:,.0f} €".replace(",", " "),
         None if delta_ca_abs is None else f"{delta_ca_abs:+.0f} € ({delta_ca_pct:+.1f} %)",
     )
-    col2.metric("Quantités vendues (TVA)", int(qt_ref))
-    col3.metric("CA abonnements (CSV)", f"{ca_abos_csv:,.2f} €".replace(",", " "))
-    col4.metric("CA carnets 10 (CSV)", f"{ca_cartes10_csv:,.2f} €".replace(",", " "))
+    col2.metric("Qté vendue (TVA)", int(qt_ref))
+    col3.metric("CA abonnements (CSV)", f"{ca_abos_csv:,.0f} €".replace(",", " "))
+    col4.metric("CA carnets 10 (CSV)", f"{ca_cartes10_csv:,.0f} €".replace(",", " "))
 
-    st.markdown("---")
+    st.markdown("")
 
-    # GRAPH 1 – CA total vs mois précédent
-    st.markdown("### CA total – comparaison rapide")
-
-    if mois_prev is None:
-        st.info("Un seul mois de données disponible pour l’instant.")
-    else:
+    # Graph CA total vs mois précédent
+    if mois_prev is not None:
         df_ca_comp = pd.DataFrame({
-            "mois": [mois_prev, mois_ref],
             "mois_label": [format_mois_label(mois_prev), format_mois_label(mois_ref)],
             "CA": [ca_prev, ca_ref],
         })
-        chart_ca = (
-            alt.Chart(df_ca_comp)
-            .mark_bar()
-            .encode(
-                x=alt.X("mois_label:N", title=None),
-                y=alt.Y("CA:Q", title="CA total (€)"),
-                tooltip=[alt.Tooltip("CA:Q", format=".2f"), "mois_label"],
-            )
-            .properties(height=260)
-        )
+        chart_ca = bar_chart_vertical(df_ca_comp, "mois_label", "CA", "", "CA total (€)")
         st.altair_chart(chart_ca, use_container_width=True)
+    else:
+        st.info("Un seul mois de données disponible pour l’instant.")
 
-    # GRAPH 2 – Structure du CA TVA (catégories)
+    st.markdown("---")
+
+    # Structure du CA TVA – donut
     st.markdown("### Structure du CA (TVA)")
 
     df_pie = pd.DataFrame({
@@ -700,11 +749,11 @@ with tab_dash:
 
     col_pie, col_tab = st.columns((1, 1))
     with col_pie:
-        fig, ax = plt.subplots(figsize=(4, 4))
-        if df_pie["CA"].sum() > 0:
-            ax.pie(df_pie["CA"], labels=df_pie["categorie"], autopct="%1.1f%%")
-        ax.set_title(f"Répartition CA – {format_mois_label(mois_ref)}")
-        st.pyplot(fig)
+        chart_donut = donut_chart(df_pie, "categorie", "CA", f"{format_mois_label(mois_ref)}")
+        if chart_donut is None:
+            st.info("Pas de CA pour ce mois.")
+        else:
+            st.altair_chart(chart_donut, use_container_width=True)
     with col_tab:
         if df_pie["CA"].sum() > 0:
             df_pie["% CA"] = (df_pie["CA"] / df_pie["CA"].sum() * 100).round(1)
@@ -714,70 +763,48 @@ with tab_dash:
 
     st.markdown("---")
 
-    # GRAPH 3 – Abonnements vs carnets 10 (CSV) – nombre et CA
+    # Abonnements vs carnets 10 – Nb + CA
     st.markdown("### Abonnements vs carnets 10 (CSV)")
 
     if not has_abos or df_mois_abos.empty:
         st.info("Aucune donnée CSV d’inscriptions pour ce mois.")
     else:
-        # Nb contrats
         df_nb = pd.DataFrame({
             "type": ["Abonnements", "Carnets 10"],
             "Nombre": [nb_abos, nb_cartes10],
         })
-        chart_nb = (
-            alt.Chart(df_nb)
-            .mark_bar()
-            .encode(
-                x=alt.X("type:N", title=None),
-                y=alt.Y("Nombre:Q", title="Nombre de contrats"),
-                tooltip=["type", "Nombre"],
-            )
-            .properties(height=220)
-        )
-
-        # CA contrats
         df_ca = pd.DataFrame({
             "type": ["Abonnements", "Carnets 10"],
             "CA": [ca_abos_csv, ca_cartes10_csv],
         })
-        chart_ca2 = (
-            alt.Chart(df_ca)
-            .mark_bar()
-            .encode(
-                x=alt.X("type:N", title=None),
-                y=alt.Y("CA:Q", title="CA (€)"),
-                tooltip=[alt.Tooltip("CA:Q", format=".2f"), "type"],
-            )
-            .properties(height=220)
-        )
 
         col_nb, col_ca = st.columns(2)
         with col_nb:
+            chart_nb = bar_chart_vertical(df_nb, "type", "Nombre", "", "Nombre de contrats")
             st.altair_chart(chart_nb, use_container_width=True)
         with col_ca:
+            chart_ca2 = bar_chart_vertical(df_ca, "type", "CA", "", "CA (€)")
             st.altair_chart(chart_ca2, use_container_width=True)
 
     st.markdown("---")
 
-    # Analyse automatique simple
-    st.markdown("### Analyse automatique (lecture rapide)")
+    # Analyse automatique courte
+    st.markdown("### Analyse automatique")
 
     bullet_points = []
 
     if delta_ca_abs is not None:
         if delta_ca_abs > 0:
             bullet_points.append(
-                f"- CA total en **hausse** de **{delta_ca_abs:.0f} €** ({delta_ca_pct:+.1f} %) vs mois précédent."
+                f"- CA total en **hausse** de **{delta_ca_abs:.0f} €** ({delta_ca_pct:+.1f} %)."
             )
         elif delta_ca_abs < 0:
             bullet_points.append(
-                f"- CA total en **baisse** de **{abs(delta_ca_abs):.0f} €** ({delta_ca_pct:+.1f} %) vs mois précédent."
+                f"- CA total en **baisse** de **{abs(delta_ca_abs):.0f} €** ({delta_ca_pct:+.1f} %)."
             )
         else:
             bullet_points.append("- CA total **stable** vs mois précédent.")
 
-    # Catégorie la plus forte
     cat_values = {
         "Abonnements / cartes": ca_abos_cartes_tva,
         "Boissons & compléments": ca_boissons,
@@ -786,7 +813,7 @@ with tab_dash:
     cat_sorted = sorted(cat_values.items(), key=lambda x: x[1], reverse=True)
     if cat_sorted and cat_sorted[0][1] > 0:
         bullet_points.append(
-            f"- Catégorie principale : **{cat_sorted[0][0]}** ({cat_sorted[0][1]:.0f} €)."
+            f"- Catégorie dominante : **{cat_sorted[0][0]}** ({cat_sorted[0][1]:.0f} €)."
         )
 
     if has_abos and not df_mois_abos.empty:
@@ -794,7 +821,7 @@ with tab_dash:
         if total_contrats > 0:
             part_abos = nb_abos / total_contrats * 100
             bullet_points.append(
-                f"- Répartition contrats : **{part_abos:.0f} % abonnements** / {100 - part_abos:.0f} % carnets 10."
+                f"- Mix contrats : **{part_abos:.0f} % abonnements** / {100 - part_abos:.0f} % carnets 10."
             )
 
     if not bullet_points:
@@ -802,6 +829,7 @@ with tab_dash:
     else:
         for b in bullet_points:
             st.markdown(b)
+
 
 # -------------------------------------------------------------------
 # TAB 1 : VUE MENSUELLE
@@ -846,7 +874,7 @@ with tab_mensuel:
     st.markdown(f"### Synthèse CA – {format_mois_label(mois_focus)} (TVA)")
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("CA total", f"{ca_mois:,.2f} €".replace(",", " "))
+    c1.metric("CA total", f"{ca_mois:,.0f} €".replace(",", " "))
     c2.metric("Quantités vendues", int(qte_mois))
     if delta_ca_abs2 is not None:
         c3.metric("Δ CA vs mois précédent", f"{delta_ca_abs2:+.0f} €", f"{delta_ca_pct2:+.1f} %")
@@ -856,14 +884,15 @@ with tab_mensuel:
 
     st.markdown("#### Répartition du CA par catégorie (TVA)")
 
-    col_pie, col_tab = st.columns((1, 1))
-    with col_pie:
-        fig, ax = plt.subplots(figsize=(4, 4))
-        if not ca_cat_mois.empty:
-            ax.pie(ca_cat_mois["CA"], labels=ca_cat_mois["categorie"], autopct="%1.1f%%")
-        ax.set_title("CA par catégorie")
-        st.pyplot(fig)
-    with col_tab:
+    col_pie2, col_tab2 = st.columns((1, 1))
+    with col_pie2:
+        chart_cat_donut = donut_chart(ca_cat_mois.rename(columns={"categorie": "Catégorie", "CA": "CA"}),
+                                      "Catégorie", "CA", "")
+        if chart_cat_donut is None:
+            st.info("Pas de CA pour ce mois.")
+        else:
+            st.altair_chart(chart_cat_donut, use_container_width=True)
+    with col_tab2:
         if ca_mois > 0:
             ca_cat_mois["% CA"] = (ca_cat_mois["CA"] / ca_mois * 100).round(1)
         else:
@@ -894,14 +923,12 @@ with tab_mensuel:
 
             cA, cB, cC, cD = st.columns(4)
             cA.metric("Abonnements vendus", nb_abos2)
-            cB.metric("CA abonnements", f"{ca_abos2:,.2f} €".replace(",", " "))
+            cB.metric("CA abonnements", f"{ca_abos2:,.0f} €".replace(",", " "))
             cC.metric("Carnets 10 vendus", nb_cartes102)
-            cD.metric("CA carnets 10", f"{ca_cartes102:,.2f} €".replace(",", " "))
+            cD.metric("CA carnets 10", f"{ca_cartes102:,.0f} €".replace(",", " "))
 
-            # Répartition par type d'abo
             if not df_abos_only2.empty:
                 st.markdown("#### Répartition des abonnements par type (ventes)")
-
                 abo_type = (
                     df_abos_only2.groupby("sous_type", as_index=False)
                     .agg(
@@ -914,18 +941,8 @@ with tab_mensuel:
 
                 col_bar_abo, col_tab_abo = st.columns((1.2, 1))
                 with col_bar_abo:
-                    chart = (
-                        alt.Chart(abo_type)
-                        .mark_bar()
-                        .encode(
-                            x=alt.X("sous_type:N", sort="-y", title="Type d’abonnement"),
-                            y=alt.Y("Nb:Q", title="Nb d’abonnements"),
-                            tooltip=["sous_type", "Nb", alt.Tooltip("CA:Q", format=".2f")]
-                        )
-                        .properties(height=260)
-                    )
+                    chart = bar_chart_vertical(abo_type, "sous_type", "Nb", "", "Nb d’abonnements")
                     st.altair_chart(chart, use_container_width=True)
-
                 with col_tab_abo:
                     st.dataframe(abo_type)
 
@@ -958,18 +975,8 @@ with tab_mensuel:
 
         st.dataframe(top_prod)
 
-        # Barres plus compactes (Altair)
         top10 = top_prod.head(10)
-        chart_top = (
-            alt.Chart(top10)
-            .mark_bar()
-            .encode(
-                x=alt.X("CA:Q", title="CA (€)"),
-                y=alt.Y("designation:N", sort="-x", title=None),
-                tooltip=["designation", alt.Tooltip("CA:Q", format=".2f"), "Quantites"]
-            )
-            .properties(height=280)
-        )
+        chart_top = bar_chart_horizontal(top10, "designation", "CA", "", "CA (€)")
         st.altair_chart(chart_top, use_container_width=True)
 
 
@@ -1008,35 +1015,22 @@ with tab_comp:
         summary_range = add_deltas(summary_range, "CA_total")
         summary_range["mois_label"] = summary_range["mois"].apply(format_mois_label)
 
-        # Vue globale CA total (TVA) – BARRES + tableau
-        st.markdown("### Vue globale – CA total par mois (TVA)")
+        # Vue globale CA total (TVA)
+        st.markdown("### CA total par mois (TVA)")
 
-        col_chart, col_table = st.columns((1.3, 1))
-        with col_chart:
-            chart_global = (
-                alt.Chart(summary_range)
-                .mark_bar()
-                .encode(
-                    x=alt.X("mois_label:N", sort=list(summary_range["mois_label"]), title=None),
-                    y=alt.Y("CA_total:Q", title="CA total (€)"),
-                    tooltip=[alt.Tooltip("CA_total:Q", format=".2f"), "mois_label"]
-                )
-                .properties(height=280)
-            )
-            st.altair_chart(chart_global, use_container_width=True)
+        chart_global = bar_chart_vertical(summary_range, "mois_label", "CA_total", "", "CA total (€)")
+        st.altair_chart(chart_global, use_container_width=True)
 
-        with col_table:
-            df_display = summary_range[["mois", "CA_total", "Delta_CA_total", "Delta_%_CA_total"]].copy()
-            df_display["mois"] = df_display["mois"].apply(format_mois_label)
+        df_display = summary_range[["mois", "CA_total", "Delta_CA_total", "Delta_%_CA_total"]].copy()
+        df_display["mois"] = df_display["mois"].apply(format_mois_label)
 
-            styled = df_display.style.format({
-                "CA_total": "{:,.2f} €".format,
-                "Delta_CA_total": lambda x: "—" if pd.isna(x) else f"{x:+.0f} €",
-                "Delta_%_CA_total": lambda x: "—" if pd.isna(x) else f"{x:+.1f} %",
-            }).applymap(style_delta, subset=["Delta_CA_total", "Delta_%_CA_total"])
+        styled = df_display.style.format({
+            "CA_total": "{:,.2f} €".format,
+            "Delta_CA_total": lambda x: "—" if pd.isna(x) else f"{x:+.0f} €",
+            "Delta_%_CA_total": lambda x: "—" if pd.isna(x) else f"{x:+.1f} %",
+        }).applymap(style_delta, subset=["Delta_CA_total", "Delta_%_CA_total"])
 
-            st.dataframe(styled)
-
+        st.dataframe(styled)
         st.markdown("---")
 
         # Comparaison par catégorie TVA (CA mensuel)
@@ -1052,37 +1046,23 @@ with tab_comp:
         df_cat = summary_range[["mois", "mois_label", col_name]].copy().rename(columns={col_name: "CA_cat"})
         df_cat = add_deltas(df_cat, "CA_cat")
 
-        col_chart_cat, col_table_cat = st.columns((1.3, 1))
+        chart_cat = bar_chart_vertical(df_cat, "mois_label", "CA_cat", "", f"CA – {cat_choice} (€)")
+        st.altair_chart(chart_cat, use_container_width=True)
 
-        with col_chart_cat:
-            chart_cat = (
-                alt.Chart(df_cat)
-                .mark_bar()
-                .encode(
-                    x=alt.X("mois_label:N", sort=list(df_cat["mois_label"]), title=None),
-                    y=alt.Y("CA_cat:Q", title=f"CA – {cat_choice} (€)"),
-                    tooltip=[alt.Tooltip("CA_cat:Q", format=".2f"), "mois_label"]
-                )
-                .properties(height=260)
-            )
-            st.altair_chart(chart_cat, use_container_width=True)
+        df_cat_display = df_cat[["mois", "CA_cat", "Delta_CA_cat", "Delta_%_CA_cat"]].copy()
+        df_cat_display["mois"] = df_cat_display["mois"].apply(format_mois_label)
 
-        with col_table_cat:
-            df_cat_display = df_cat[["mois", "CA_cat", "Delta_CA_cat", "Delta_%_CA_cat"]].copy()
-            df_cat_display["mois"] = df_cat_display["mois"].apply(format_mois_label)
+        styled_cat = df_cat_display.style.format({
+            "CA_cat": "{:,.2f} €".format,
+            "Delta_CA_cat": lambda x: "—" if pd.isna(x) else f"{x:+.0f} €",
+            "Delta_%_CA_cat": lambda x: "—" if pd.isna(x) else f"{x:+.1f} %",
+        }).applymap(style_delta, subset=["Delta_CA_cat", "Delta_%_CA_cat"])
 
-            styled_cat = df_cat_display.style.format({
-                "CA_cat": "{:,.2f} €".format,
-                "Delta_CA_cat": lambda x: "—" if pd.isna(x) else f"{x:+.0f} €",
-                "Delta_%_CA_cat": lambda x: "—" if pd.isna(x) else f"{x:+.1f} %",
-            }).applymap(style_delta, subset=["Delta_CA_cat", "Delta_%_CA_cat"])
-
-            st.dataframe(styled_cat)
-
+        st.dataframe(styled)
         st.markdown("---")
 
         # Comparaison abonnements / cartes (CSV)
-        st.markdown("### Abonnements & carnets 10 – comparaison par mois (CSV)")
+        st.markdown("### Abonnements & carnets 10 – comparaison (CSV)")
 
         if not has_abos:
             st.info("Aucune donnée CSV d’inscriptions importée – pas de comparaison possible.")
@@ -1120,61 +1100,49 @@ with tab_comp:
                 abo_cartes = abo_cartes.sort_values("mois", key=lambda s: s.map(lambda x: datetime.strptime(x, "%Y-%m")))
                 abo_cartes["mois_label"] = abo_cartes["mois"].apply(format_mois_label)
 
-                # Nb abos / cartes – barres côte à côte (2 graphiques colonnes)
-                col_chart_abos, col_tab_abos = st.columns((1.3, 1))
+                df_long_nb = abo_cartes.melt(
+                    id_vars=["mois", "mois_label"],
+                    value_vars=["Nb_abos", "Nb_cartes"],
+                    var_name="type",
+                    value_name="Nombre",
+                )
+                df_long_nb["type"] = df_long_nb["type"].map({"Nb_abos": "Abonnements", "Nb_cartes": "Carnets 10"})
 
-                with col_chart_abos:
-                    df_long = abo_cartes.melt(
-                        id_vars=["mois", "mois_label"],
-                        value_vars=["Nb_abos", "Nb_cartes"],
-                        var_name="type",
-                        value_name="Nombre",
+                chart_nb = (
+                    alt.Chart(df_long_nb)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("mois_label:N", title=None),
+                        y=alt.Y("Nombre:Q", title="Nombre de contrats"),
+                        color=alt.Color("type:N", title=""),
                     )
-                    df_long["type"] = df_long["type"].map({"Nb_abos": "Abonnements", "Nb_cartes": "Carnets 10"})
+                    .properties(height=260)
+                )
+                st.altair_chart(chart_nb, use_container_width=True)
 
-                    chart_nb = (
-                        alt.Chart(df_long)
-                        .mark_bar()
-                        .encode(
-                            x=alt.X("mois_label:N", sort=list(abo_cartes["mois_label"]), title=None),
-                            y=alt.Y("Nombre:Q", title="Nombre de contrats"),
-                            color=alt.Color("type:N", title=""),
-                            column=alt.Column("type:N", title=None),
-                        )
-                        .properties(height=260)
-                    )
-                    st.altair_chart(chart_nb, use_container_width=True)
-
-                with col_tab_abos:
-                    disp = abo_cartes[["mois", "Nb_abos", "CA_abos", "Nb_cartes", "CA_cartes"]].copy()
-                    disp["mois"] = disp["mois"].apply(format_mois_label)
-                    st.dataframe(disp)
-
-                # CA abos vs carnets – barres groupées par type
-                st.markdown("#### CA abonnements vs carnets 10 (CSV)")
-
-                df_ca_long = abo_cartes.melt(
+                df_long_ca = abo_cartes.melt(
                     id_vars=["mois", "mois_label"],
                     value_vars=["CA_abos", "CA_cartes"],
                     var_name="type",
                     value_name="CA",
                 )
-                df_ca_long["type"] = df_ca_long["type"].map({"CA_abos": "Abonnements", "CA_cartes": "Carnets 10"})
+                df_long_ca["type"] = df_long_ca["type"].map({"CA_abos": "Abonnements", "CA_cartes": "Carnets 10"})
 
                 chart_ca = (
-                    alt.Chart(df_ca_long)
+                    alt.Chart(df_long_ca)
                     .mark_bar()
                     .encode(
-                        x=alt.X("mois_label:N", sort=list(abo_cartes["mois_label"]), title=None),
+                        x=alt.X("mois_label:N", title=None),
                         y=alt.Y("CA:Q", title="CA (€)"),
                         color=alt.Color("type:N", title=""),
-                        column=alt.Column("type:N", title=None),
                     )
                     .properties(height=260)
                 )
                 st.altair_chart(chart_ca, use_container_width=True)
 
-                st.caption("Affichage côte à côte pour lire rapidement la dynamique abos vs carnets.")
+                disp = abo_cartes[["mois", "Nb_abos", "CA_abos", "Nb_cartes", "CA_cartes"]].copy()
+                disp["mois"] = disp["mois"].apply(format_mois_label)
+                st.dataframe(disp)
 
 
 # -------------------------------------------------------------------
@@ -1214,16 +1182,7 @@ with tab_detail:
         st.dataframe(top_prod)
 
         top10 = top_prod.head(10)
-        chart_top = (
-            alt.Chart(top10)
-            .mark_bar()
-            .encode(
-                x=alt.X("CA:Q", title="CA (€)"),
-                y=alt.Y("designation:N", sort="-x", title=None),
-                tooltip=["designation", alt.Tooltip("CA:Q", format=".2f"), "Quantites"]
-            )
-            .properties(height=280)
-        )
+        chart_top = bar_chart_horizontal(top10, "designation", "CA", "", "CA (€)")
         st.altair_chart(chart_top, use_container_width=True)
 
     st.markdown("---")
